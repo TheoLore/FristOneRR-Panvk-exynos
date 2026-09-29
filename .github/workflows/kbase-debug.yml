@@ -79,7 +79,7 @@ jobs:
       - name: Install Android API 36 and NDK
         run: |
           sdkmanager --install \
-            'platforms;android-36' \
+            'platforms;android-35' \
             'ndk;28.2.13676358'
           echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/28.2.13676358" >> "${GITHUB_ENV}"
 
@@ -115,15 +115,14 @@ jobs:
           set -euo pipefail
           HOST_PREFIX="${GITHUB_WORKSPACE}/host-tools"
           NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          NDK_SYSROOT="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
           export PATH="${NDK_BIN}:${HOST_PREFIX}/bin:${PATH}"
 
           sed \
-            -e "s#c = \['clang', '--target=aarch64-linux-android35'\]#c = ['${NDK_BIN}/aarch64-linux-android36-clang']#" \
-            -e "s#cpp = \['clang++', '--target=aarch64-linux-android35'\]#cpp = ['${NDK_BIN}/aarch64-linux-android36-clang++']#" \
-            -e "s#ar = 'llvm-ar'#ar = '${NDK_BIN}/llvm-ar'#" \
-            -e "s#strip = 'llvm-strip'#strip = '${NDK_BIN}/llvm-strip'#" \
-            -e 's/aarch64-linux-android35/aarch64-linux-android36/g' \
-            -e "s#platform-sdk-version = '35'#platform-sdk-version = '36'#" \
+            -e "s#^c = .*#c = ['${NDK_BIN}/clang', '--target=aarch64-linux-android35', '--sysroot=${NDK_SYSROOT}']#" \
+            -e "s#^cpp = .*#cpp = ['${NDK_BIN}/clang++', '--target=aarch64-linux-android35', '--sysroot=${NDK_SYSROOT}']#" \
+            -e "s#^ar = .*#ar = '${NDK_BIN}/llvm-ar'#" \
+            -e "s#^strip = .*#strip = '${NDK_BIN}/llvm-strip'#" \
             -e "s#/data/data/com.termux/files/home/mesa/build-host/src/util/mesa_clc#${HOST_PREFIX}/bin/mesa_clc#" \
             android-cross.txt > "${RUNNER_TEMP}/android-cross-ci.txt"
 
@@ -133,7 +132,7 @@ jobs:
             --prefix=/usr \
             --libdir=lib \
             $(cat tools/fristonerr/build-options.txt) \
-            -Dplatform-sdk-version=36 \
+            -Dplatform-sdk-version=35 \
             -Dgallium-drivers= \
             -Dpanfrost-rust=false
 
