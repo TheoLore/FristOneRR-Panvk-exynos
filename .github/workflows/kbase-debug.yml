@@ -31,7 +31,6 @@ jobs:
             ca-certificates \
             clang \
             flex \
-            libdrm-dev \
             libelf-dev \
             libexpat1-dev \
             libclang-cpp-dev \
