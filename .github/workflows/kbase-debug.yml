@@ -31,6 +31,7 @@ jobs:
             bison \
             build-essential \
             ca-certificates \
+            clang \
             flex \
             libdrm-dev \
             libelf-dev \
@@ -66,7 +67,7 @@ jobs:
 
       - name: Configure
         run: |
-          meson setup "${BUILD_DIR}" \
+          CC=clang CXX=clang++ meson setup "${BUILD_DIR}" \
             --buildtype=debug \
             -Dprefix="${INSTALL_PREFIX}" \
             -Dlibdir=lib \
