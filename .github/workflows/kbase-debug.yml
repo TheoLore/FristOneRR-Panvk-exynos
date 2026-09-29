@@ -134,6 +134,7 @@ jobs:
             $(cat tools/fristonerr/build-options.txt) \
             -Dplatform-sdk-version=35 \
             -Dzstd=disabled \
+            -Dallow-fallback-for=libdrm \
             -Dgallium-drivers= \
             -Dpanfrost-rust=false
 
