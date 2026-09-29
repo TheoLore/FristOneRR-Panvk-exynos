@@ -55,10 +55,7 @@ jobs:
             python3-pip \
             python3-setuptools \
             python3-yaml \
-          EMPTY_PKGCONFIG="${RUNNER_TEMP}/empty-pkgconfig"
-          mkdir -p "${EMPTY_PKGCONFIG}"
             llvm-dev \
-          export PKG_CONFIG_LIBDIR="${EMPTY_PKGCONFIG}"
             glslang-tools \
             spirv-tools \
             zlib1g-dev \
@@ -119,7 +116,11 @@ jobs:
           HOST_PREFIX="${GITHUB_WORKSPACE}/host-tools"
           NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
           NDK_SYSROOT="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          EMPTY_PKGCONFIG="${RUNNER_TEMP}/empty-pkgconfig"
+          mkdir -p "${EMPTY_PKGCONFIG}"
           export PATH="${NDK_BIN}:${HOST_PREFIX}/bin:${PATH}"
+          # Keep the Android target from discovering host libdrm.pc files.
+          export PKG_CONFIG_LIBDIR="${EMPTY_PKGCONFIG}"
 
           sed \
             -e "s#^c = .*#c = ['${NDK_BIN}/clang', '--target=aarch64-linux-android35', '--sysroot=${NDK_SYSROOT}']#" \
