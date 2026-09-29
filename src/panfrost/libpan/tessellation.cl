@@ -42,6 +42,7 @@ panlib_tess_quad(constant struct poly_tess_params *p,
    poly_tess_quad_process(p, cl_global_id.x, mode__2);
 }
 
+#if PAN_ARCH >= 8 && PAN_ARCH != 9
 KERNEL(1024)
 panlib_prefix_sum_tess(global struct poly_tess_params *p)
 {
@@ -66,13 +67,13 @@ panlib_prefix_sum_tess(global struct poly_tess_params *p)
    draw[3] = 0;
    draw[4] = 0;
 }
+#endif
 
 #endif
 
-#if PAN_ARCH == 9
-/* Mali-G57 (v9) can't run the 1024-wide prefix-sum workgroup (its barrier
- * never completes).  Single-thread serial version with identical results:
- * inclusive scan of counts, index allocation and the indexed indirect draw. */
+#if PAN_ARCH == 6 || PAN_ARCH == 7 || PAN_ARCH == 9
+/* Older Bifrost GPUs have limited CLPER support, and Mali-G57 (v9) can't run
+ * the 1024-wide prefix-sum workgroup. Use the serial implementation there. */
 KERNEL(1)
 panlib_prefix_sum_tess_serial(global struct poly_tess_params *p)
 {

@@ -1704,6 +1704,27 @@ lower_explicit_io_deref(nir_builder *b, nir_deref_instr *deref,
 
    nir_def *addr = nir_explicit_io_address_from_deref(b, deref, base_addr,
                                                       addr_format);
+   if (addr->bit_size != deref->def.bit_size) {
+      assert(addr_format == nir_address_format_62bit_generic);
+      assert(!(deref->modes & ~(nir_var_function_temp |
+                                nir_var_shader_temp |
+                                nir_var_mem_shared)));
+
+      if (deref->def.bit_size == 32) {
+         assert(addr->bit_size == 64);
+         addr = nir_u2u32(b, addr);
+      } else {
+         assert(deref->def.bit_size == 64);
+         assert(addr->bit_size == 32);
+         assert(!(deref->modes & nir_var_mem_shared) ||
+                !(deref->modes & (nir_var_function_temp | nir_var_shader_temp)));
+
+         /* Reapply the scratch/shared tag when widening a local offset. */
+         uint64_t tag = (deref->modes & nir_var_mem_shared) ? 1ull : 2ull;
+         addr = nir_pack_64_2x32_split(
+            b, addr, nir_imm_intN_t(b, tag << 30, 32));
+      }
+   }
    assert(addr->bit_size == deref->def.bit_size);
    assert(addr->num_components == deref->def.num_components);
 
@@ -2444,6 +2465,13 @@ nir_build_addr_iadd(nir_builder *b, nir_def *addr,
 
    case nir_address_format_62bit_generic:
       assert(addr->num_components == 1);
+      if (addr->bit_size == 32) {
+         assert(!(modes & ~(nir_var_function_temp |
+                            nir_var_shader_temp |
+                            nir_var_mem_shared)));
+         assert(offset->bit_size == 32);
+         return nir_iadd(b, addr, offset);
+      }
       assert(addr->bit_size == 64);
       assert(offset->bit_size == 64);
       if (!(modes & ~(nir_var_function_temp |

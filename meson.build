@@ -16,10 +16,12 @@ project(
     'build.rust_std=2021',
   ],
 )
-add_project_link_arguments(
-  '-llog',
-  language : ['c', 'cpp'],
-)
+if host_machine.system() == 'android'
+  add_project_link_arguments(
+    '-llog',
+    language : ['c', 'cpp'],
+  )
+endif
 project_version = meson.project_version()
 
 if host_machine.system() == 'darwin'
