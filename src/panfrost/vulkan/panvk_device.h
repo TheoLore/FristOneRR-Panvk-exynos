@@ -75,6 +75,19 @@ struct panvk_device {
    struct panvk_priv_bo *indirect_varying_buffer;
    struct panvk_priv_bo *sample_positions;
 
+   /* Bifrost (v7) has no hardware NULL descriptor. Null image and texel
+    * buffer descriptors are emulated with valid descriptors that point into
+    * null_desc_bo: bytes 0-4K read-only zeros, 4K-8K scratch that
+    * absorbs writes, 8K-12K texture payload. Each entry is one 32-byte descriptor
+    * slot (PANVK_DESCRIPTOR_SIZE). Unused on v9+. */
+   struct panvk_priv_bo *null_desc_bo;
+   struct {
+      uint8_t sampled_img[32];
+      uint8_t storage_img[32];
+      uint8_t ro_texel_buf[32];
+      uint8_t rw_texel_buf[32];
+   } null_desc;
+
    struct {
       struct panvk_priv_bo *handlers_bo;
       uint32_t handler_stride;

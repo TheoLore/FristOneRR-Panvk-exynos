@@ -89,9 +89,26 @@ write_desc_data(struct panvk_descriptor_set *set, uint32_t binding,
       write_desc(set, binding, elem, &null_desc, (subdesc));                   \
    } while (0)
 #else
+/* Bifrost has no hardware NULL descriptor. An all-zero slot is a zero-sized
+ * UBO (entries = 0), a zero-sized SSBO (base = size = 0) and a default
+ * sampler; with robust buffer access the NIR lowering bounds-checks those, so
+ * reads return 0 and writes are dropped. Null image views and texel buffer
+ * views cannot be zero (Bifrost would decode an invalid descriptor): they
+ * use the valid descriptors built by init_null_descriptors() in
+ * panvk_vX_device.c. Always overwrite the slot so a previously written valid
+ * descriptor cannot survive a VK_NULL_HANDLE write. */
 #define write_nulldesc(set, binding, elem, subdesc)                            \
    do {                                                                        \
+      static const uint8_t null_desc_zero[PANVK_DESCRIPTOR_SIZE] = {0};        \
+      write_desc_data(set, binding, elem, (subdesc), 0, null_desc_zero,        \
+                      PANVK_DESCRIPTOR_SIZE);                                  \
    } while (0)
+
+static struct panvk_device *
+panvk_set_device(const struct panvk_descriptor_set *set)
+{
+   return to_panvk_device(set->layout->vk.base.device);
+}
 #endif
 
 static void
@@ -140,10 +157,26 @@ write_image_view_desc(struct panvk_descriptor_set *set,
       &set->layout->bindings[binding];
 
    if (pImageInfo->imageView == VK_NULL_HANDLE) {
+#if PAN_ARCH < 9
+      const struct panvk_device *dev = panvk_set_device(set);
+
+      for (uint8_t plane = 0; plane < binding_layout->textures_per_desc;
+           plane++) {
+         if (type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
+            write_desc_data(set, binding, elem, NO_SUBDESC, 0,
+                            dev->null_desc.storage_img, PANVK_DESCRIPTOR_SIZE);
+         else
+            write_desc_data(set, binding, elem,
+                            get_tex_subdesc_info(binding_layout->type, plane),
+                            0, dev->null_desc.sampled_img,
+                            PANVK_DESCRIPTOR_SIZE);
+      }
+#else
       for (uint8_t plane = 0; plane < binding_layout->textures_per_desc;
            plane++)
          write_nulldesc(set, binding, elem,
                         get_tex_subdesc_info(binding_layout->type, plane));
+#endif
       return;
    }
 
@@ -249,7 +282,17 @@ write_buffer_view_desc(struct panvk_descriptor_set *set,
                        uint32_t elem, VkDescriptorType type)
 {
    if (bufferView == VK_NULL_HANDLE) {
+#if PAN_ARCH < 9
+      const struct panvk_device *dev = panvk_set_device(set);
+
+      write_desc_data(set, binding, elem, NO_SUBDESC, 0,
+                      type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER
+                         ? dev->null_desc.rw_texel_buf
+                         : dev->null_desc.ro_texel_buf,
+                      PANVK_DESCRIPTOR_SIZE);
+#else
       write_nulldesc(set, binding, elem, NO_SUBDESC);
+#endif
       return;
    }
 

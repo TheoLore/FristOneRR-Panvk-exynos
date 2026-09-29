@@ -45,6 +45,14 @@
 #include "util/u_printf.h"
 #include "pan_props.h"
 #include "pan_samples.h"
+#if PAN_ARCH < 9
+#include "drm-uapi/drm_fourcc.h"
+#include "pan_buffer.h"
+#include "pan_desc.h"
+#include "pan_format.h"
+#include "pan_image.h"
+#include "pan_texture.h"
+#endif
 #include "poly/geometry.h"
 
 static void *
@@ -404,6 +412,135 @@ panvk_queue_destroy(struct vk_queue *queue)
    }
 }
 
+#if PAN_ARCH < 9
+/* Bifrost has no hardware NULL descriptor. Build valid descriptors that point
+ * at device-owned memory so that VK_NULL_HANDLE image views / texel buffer
+ * views (VK_EXT_robustness2 nullDescriptor) read zeros and cannot fault.
+ *
+ * null_desc_bo layout (4 KiB pages):
+ *   page 0: zeros, never written  -> sampled images, uniform texel buffers
+ *   page 1: scratch               -> storage images, storage texel buffers
+ *   page 2: texture payload for the sampled-image descriptor
+ */
+static VkResult
+panvk_per_arch(init_null_descriptors)(struct panvk_device *device)
+{
+   const uint64_t page = 4096;
+   const enum pipe_format pfmt = PIPE_FORMAT_R8G8B8A8_UNORM;
+
+   VkResult result = panvk_priv_bo_create(
+      device, 3 * page,
+      panvk_device_adjust_bo_flags(device, PAN_KMOD_BO_FLAG_WB_MMAP),
+      VK_SYSTEM_ALLOCATION_SCOPE_DEVICE, &device->null_desc_bo);
+   if (result != VK_SUCCESS)
+      return result;
+
+   uint8_t *host = device->null_desc_bo->addr.host;
+   const uint64_t zero_dev = device->null_desc_bo->addr.dev;
+   const uint64_t scratch_dev = zero_dev + page;
+   memset(host, 0, 3 * page);
+
+   /* Sampled image: 1x1 linear RGBA8 2D texture backed by the zero page. */
+   struct pan_image_plane null_plane = {0};
+   struct pan_image null_image = {
+      .props = {
+         .modifier = DRM_FORMAT_MOD_LINEAR,
+         .format = pfmt,
+         .extent_px = {.width = 1, .height = 1, .depth = 1},
+         .nr_samples = 1,
+         .dim = MALI_TEXTURE_DIMENSION_2D,
+         .nr_slices = 1,
+         .array_size = 1,
+      },
+      .mod_handler = pan_mod_get_handler(PAN_ARCH, DRM_FORMAT_MOD_LINEAR),
+      .planes = {&null_plane},
+   };
+   if (!null_image.mod_handler ||
+       !pan_image_layout_init(PAN_ARCH, &null_image, 0, NULL) ||
+       null_plane.layout.data_size_B > page) {
+      result = panvk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      goto err;
+   }
+   null_plane.base = zero_dev;
+
+   struct pan_image_view pview = {
+      .format = pfmt,
+      .dim = MALI_TEXTURE_DIMENSION_2D,
+      .swizzle = {PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z,
+                  PIPE_SWIZZLE_W},
+      .planes = {{.image = &null_image, .plane_idx = 0}},
+      .nr_samples = 1,
+   };
+
+   if (GENX(pan_texture_estimate_payload_size)(&pview) > page) {
+      result = panvk_error(device, VK_ERROR_INITIALIZATION_FAILED);
+      goto err;
+   }
+
+   struct pan_ptr payload = {
+      .gpu = zero_dev + 2 * page,
+      .cpu = host + 2 * page,
+   };
+   struct mali_texture_packed tex;
+   GENX(pan_sampled_texture_emit)(&pview, &tex, &payload);
+   static_assert(sizeof(tex) == sizeof(device->null_desc.sampled_img),
+                 "wrong descriptor size");
+   memcpy(device->null_desc.sampled_img, &tex, sizeof(tex));
+
+   /* Storage image: same encoding as prepare_attr_buf_descs() in
+    * panvk_vX_image_view.c, for a 1x1x1 linear RGBA8 image on the scratch
+    * page (log2(nr_samples) = 0). */
+   struct mali_attribute_buffer_packed img[2];
+   pan_pack(&img[0], ATTRIBUTE_BUFFER, cfg) {
+      const uint32_t fmt_blksize = util_format_get_blocksize(pfmt);
+      const uint32_t hw_fmt = GENX(pan_format_from_pipe_format)(pfmt)->hw;
+
+      cfg.type = MALI_ATTRIBUTE_TYPE_3D_LINEAR;
+      cfg.pointer = scratch_dev;
+      cfg.stride = fmt_blksize | (hw_fmt << 10);
+      cfg.size = page;
+   }
+   pan_cast_and_pack(&img[1], ATTRIBUTE_BUFFER_CONTINUATION_3D, cfg) {
+      cfg.s_dimension = 1;
+      cfg.t_dimension = 1;
+      cfg.r_dimension = 1;
+      cfg.row_stride = 64;
+   }
+   static_assert(sizeof(img) == sizeof(device->null_desc.storage_img),
+                 "wrong descriptor size");
+   memcpy(device->null_desc.storage_img, img, sizeof(img));
+
+   /* Texel buffers: one RGBA8 element. Same layout as the padded descriptor
+    * written by write_buffer_view_desc(). */
+   struct {
+      struct mali_attribute_buffer_packed attr_buf_desc;
+      struct mali_attribute_packed attr_desc;
+      uint32_t pad[2];
+   } ro = {0}, rw = {0};
+   static_assert(sizeof(ro) == sizeof(device->null_desc.ro_texel_buf),
+                 "wrong descriptor size");
+
+   struct pan_buffer_view bview = {
+      .format = pfmt,
+      .width_el = 1,
+      .base = zero_dev,
+   };
+   GENX(pan_buffer_texture_emit)(&bview, &ro.attr_buf_desc, &ro.attr_desc);
+   bview.base = scratch_dev;
+   GENX(pan_buffer_texture_emit)(&bview, &rw.attr_buf_desc, &rw.attr_desc);
+   memcpy(device->null_desc.ro_texel_buf, &ro, sizeof(ro));
+   memcpy(device->null_desc.rw_texel_buf, &rw, sizeof(rw));
+
+   panvk_priv_bo_flush(device->null_desc_bo, 0, 3 * page);
+   return VK_SUCCESS;
+
+err:
+   panvk_priv_bo_unref(device->null_desc_bo);
+   device->null_desc_bo = NULL;
+   return result;
+}
+#endif
+
 VkResult
 panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
                               const VkDeviceCreateInfo *pCreateInfo,
@@ -633,6 +770,12 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
    panvk_priv_bo_flush(device->sample_positions, 0,
                        pan_sample_positions_buffer_size());
 
+#if PAN_ARCH < 9
+   result = panvk_per_arch(init_null_descriptors)(device);
+   if (result != VK_SUCCESS)
+      goto err_free_priv_bos;
+#endif
+
 #if PAN_ARCH >= 10
 
    result = panvk_per_arch(init_tiler_oom)(device);
@@ -751,6 +894,7 @@ err_free_priv_bos:
       u_printf_destroy(&device->printf.ctx);
    panvk_priv_bo_unref(device->printf.bo);
    panvk_priv_bo_unref(device->tiler_oom.handlers_bo);
+   panvk_priv_bo_unref(device->null_desc_bo);
    panvk_priv_bo_unref(device->sample_positions);
    panvk_priv_bo_unref(device->poly_heap);
    panvk_priv_bo_unref(device->indirect_varying_buffer);
@@ -808,6 +952,7 @@ panvk_per_arch(destroy_device)(struct panvk_device *device,
    panvk_priv_bo_unref(device->poly_heap);
    panvk_priv_bo_unref(device->indirect_varying_buffer);
    panvk_priv_bo_unref(device->tiler_heap);
+   panvk_priv_bo_unref(device->null_desc_bo);
    panvk_priv_bo_unref(device->sample_positions);
    panvk_device_cleanup_mempools(device);
    vk_free(&device->vk.alloc, device->dump_region_size);

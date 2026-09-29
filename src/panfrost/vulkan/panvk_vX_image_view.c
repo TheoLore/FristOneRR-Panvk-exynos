@@ -187,8 +187,6 @@ prepare_tex_descs(struct panvk_image_view *view)
          }
       } else {
          GENX(pan_sampled_texture_emit)(&pview, &view->descs.tex[0], &ptr);
-      { const uint8_t *td = (const uint8_t *)&view->descs.tex[0]; (void)0; for (int _i = 0; _i < 32; _i++) fprintf(stderr, " %02x", td[_i]); fprintf(stderr, "\n"); }
-      (void)0;
 #if PAN_ARCH >= 9
          if (has_storage) {
             struct pan_image_view spview = panvk_storage_pview(view, &pview);
