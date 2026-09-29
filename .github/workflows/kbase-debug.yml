@@ -73,6 +73,8 @@ jobs:
 
       - name: Install Android NDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       - name: Install Android API 36 and NDK
         run: |
