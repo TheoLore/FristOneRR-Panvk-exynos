@@ -143,7 +143,7 @@ write_image_view_desc(struct panvk_descriptor_set *set,
       for (uint8_t plane = 0; plane < binding_layout->textures_per_desc;
            plane++)
          write_nulldesc(set, binding, elem,
-                        get_sampler_subdesc_info(binding_layout->type, plane));
+                        get_tex_subdesc_info(binding_layout->type, plane));
       return;
    }
 
@@ -500,7 +500,7 @@ panvk_init_iub(struct panvk_descriptor_set *set, uint32_t binding,
 
    pan_pack(&padded_desc.ubo, UNIFORM_BUFFER, cfg) {
       cfg.pointer = iub_data_dev;
-      cfg.entries = iub_size_dev;
+      cfg.entries = DIV_ROUND_UP(iub_size_dev, 16);
    }
    write_desc(set, binding, 0, &padded_desc, NO_SUBDESC);
 #else

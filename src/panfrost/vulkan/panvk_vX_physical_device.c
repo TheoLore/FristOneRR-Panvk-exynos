@@ -10,7 +10,6 @@
  */
 
 #include <stdlib.h>
-#define PANVK_DXVK_COMPAT_ON() (getenv("PANVK_DXVK_COMPAT") != NULL && getenv("PANVK_DXVK_COMPAT")[0] == '1')
 #include <sys/sysmacros.h>
 
 #include "git_sha1.h"
@@ -325,7 +324,7 @@ panvk_per_arch(get_physical_device_features)(
       .fullDrawIndexUint32 = true,
       .imageCubeArray = true,
       .independentBlend = true,
-      .geometryShader = PANVK_DXVK_COMPAT_ON(),
+      .geometryShader = false,
       .tessellationShader = PAN_ARCH >= 9,
       .sampleRateShading = true,
       .dualSrcBlend = true,
@@ -346,11 +345,11 @@ panvk_per_arch(get_physical_device_features)(
       .wideLines = true,
       .largePoints = true,
       .alphaToOne = false,
-      .multiViewport = PANVK_DXVK_COMPAT_ON(),
+      .multiViewport = false,
       .samplerAnisotropy = true,
       .textureCompressionETC2 = has_texture_compression_etc2(device),
       .textureCompressionASTC_LDR = has_texture_compression_astc_ldr(device),
-      .textureCompressionBC = has_texture_compression_bc(device) || PANVK_DXVK_COMPAT_ON(),
+      .textureCompressionBC = has_texture_compression_bc(device),
       .occlusionQueryPrecise = true,
       .pipelineStatisticsQuery = false,
       /* On v13+, the hardware isn't speculatively referencing to invalid
@@ -369,8 +368,8 @@ panvk_per_arch(get_physical_device_features)(
       .shaderSampledImageArrayDynamicIndexing = true,
       .shaderStorageBufferArrayDynamicIndexing = true,
       .shaderStorageImageArrayDynamicIndexing = true,
-      .shaderClipDistance = PANVK_DXVK_COMPAT_ON(),
-      .shaderCullDistance = PANVK_DXVK_COMPAT_ON(),
+      .shaderClipDistance = false,
+      .shaderCullDistance = false,
       .shaderFloat64 = false,
       .shaderInt64 = true,
       .shaderInt16 = true,
