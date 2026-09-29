@@ -69,24 +69,18 @@ cd mesa-panvk-kbase-*-aarch64
 . ./env.sh
 ```
 
-## Standalone emulator driver
+## Android emulator driver
 
-The `PanVK kbase standalone driver` GitHub Actions workflow uploads a
-driver-only artifact containing `libvulkan_panfrost_kbase.so`, its Vulkan ICD
-JSON manifest, a descriptive `.meta` sidecar, and a Winlator `.wcp` package.
-The shared library is stripped and the workflow rejects it if it exceeds
-22 MiB.
+The `PanVK Android kbase driver package` GitHub Actions workflow cross-builds
+an arm64 Android/Bionic library with API 36 and uploads a ZIP containing exactly
+three root files: `libvulkan_panfrost.so`, `meta.json`, and `LICENSE-Mesa.txt`.
+The metadata follows the `schemaVersion: 1` format used by the PanVK Mali driver
+package and includes the library SHA-256. The build fails if the library is
+larger than 22,000,000 bytes.
 
-For Winlator's Content Manager, install the `.wcp` package. For manual Linux
-installation, place the shared library in the guest's library directory and
-install its ICD manifest under `share/vulkan/icd.d`. The `.meta` file documents
-the build; it is not a universal Vulkan-loader manifest. The loader uses the
-ICD JSON file.
-
-This artifact targets arm64 Linux with glibc, as used by Winlator's Linux
-userspace. It is not an Android/Bionic Vulkan driver and should not be selected
-as a native Android driver in Eden or another Android app. Those environments
-require a separate Android-target build and matching package format.
+Use this Android package with emulator driver importers that accept this
+metadata format. It is not the Linux/glibc ICD package described above; use the
+Debian, Ubuntu, Arch, or generic release package for a regular Linux userspace.
 
 ## Running Vulkan applications
 

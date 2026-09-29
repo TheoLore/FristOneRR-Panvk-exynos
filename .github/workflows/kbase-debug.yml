@@ -1,5 +1,5 @@
 ---
-name: PanVK kbase standalone driver
+name: PanVK Android kbase driver package
 
 'on':
   push:
@@ -10,14 +10,13 @@ permissions:
   contents: read
 
 jobs:
-  build-kbase-debug:
-    name: Build PanVK kbase debug Mesa
-    runs-on: ubuntu-24.04-arm
-    container:
-      image: debian:13
+  build-panvk-android:
+    name: Build Android PanVK kbase driver
+    runs-on: ubuntu-24.04
     env:
-      ARTIFACT_NAME: panvk-kbase-driver-aarch64
-      BUILD_DIR: build-driver
+      ARTIFACT_NAME: panvk-mali-kbase-android
+      HOST_BUILD_DIR: build-host
+      ANDROID_BUILD_DIR: build-android
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -72,137 +71,139 @@ jobs:
           python3 -m pip install --break-system-packages \
             'meson>=1.4.0,<2'
 
-      - name: Configure
+      - name: Install Android NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android API 36 and NDK
         run: |
-          CC=clang CXX=clang++ meson setup "${BUILD_DIR}" \
+          sdkmanager --install \
+            'platforms;android-36' \
+            'ndk;28.2.13676358'
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/28.2.13676358" >> "${GITHUB_ENV}"
+
+      - name: Build native shader tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST_PREFIX="${GITHUB_WORKSPACE}/host-tools"
+          CC=clang CXX=clang++ meson setup "${HOST_BUILD_DIR}" \
             --buildtype=release \
-            -Dprefix=/usr \
+            -Dprefix="${HOST_PREFIX}" \
             -Dlibdir=lib \
-            -Db_ndebug=true \
             -Dbuild-tests=false \
-            -Ddisplay-info=disabled \
-            -Degl=disabled \
-            -Denable-glcpp-tests=false \
+            -Dplatforms= \
             -Dgallium-drivers= \
-            -Dgbm=disabled \
-            -Dgles1=disabled \
-            -Dgles2=disabled \
-            -Dglx=disabled \
-            -Dinstall-mesa-clc=false \
-            -Dinstall-precomp-compiler=false \
-            -Dlibunwind=disabled \
-            -Dlmsensors=disabled \
-            -Dllvm=enabled \
+            -Dvulkan-drivers= \
             -Dmesa-clc=enabled \
-            -Dopengl=false \
+            -Dinstall-mesa-clc=true \
+            -Dtools=panfrost \
+            -Dprecomp-compiler=enabled \
+            -Dinstall-precomp-compiler=true \
             -Dpanfrost-kmds=kbase \
             -Dpanfrost-rust=false \
-            -Dplatforms=x11 \
-            -Dprecomp-compiler=enabled \
-            -Dshared-glapi=disabled \
-            -Dtools= \
+            -Dllvm=enabled \
             -Dvalgrind=disabled \
-            -Dvideo-codecs= \
-            -Dvulkan-drivers=panfrost \
-            -Dvulkan-layers= \
-            -Dxmlconfig=disabled \
             -Dzstd=disabled
+          meson compile -C "${HOST_BUILD_DIR}" -j "$(nproc)"
+          meson install -C "${HOST_BUILD_DIR}"
 
-      - name: Build
-        run: meson compile -C "${BUILD_DIR}" -j "$(nproc)"
+      - name: Configure Android driver
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOST_PREFIX="${GITHUB_WORKSPACE}/host-tools"
+          NDK_BIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="${NDK_BIN}:${HOST_PREFIX}/bin:${PATH}"
 
-      - name: Stage standalone driver and metadata
+          sed \
+            -e 's/aarch64-linux-android35/aarch64-linux-android36/g' \
+            -e "s#platform-sdk-version = '35'#platform-sdk-version = '36'#" \
+            -e "s#/data/data/com.termux/files/home/mesa/build-host/src/util/mesa_clc#${HOST_PREFIX}/bin/mesa_clc#" \
+            android-cross.txt > "${RUNNER_TEMP}/android-cross-ci.txt"
+
+          meson setup "${ANDROID_BUILD_DIR}" \
+            --cross-file "${RUNNER_TEMP}/android-cross-ci.txt" \
+            --buildtype=release \
+            --prefix=/usr \
+            --libdir=lib \
+            $(cat tools/fristonerr/build-options.txt) \
+            -Dplatform-sdk-version=36 \
+            -Dgallium-drivers= \
+            -Dpanfrost-rust=false
+
+      - name: Build Android PanVK
+        run: meson compile -C "${ANDROID_BUILD_DIR}" -j "$(nproc)"
+
+      - name: Package Android driver
+        id: package
         shell: bash
         run: |
           set -euo pipefail
 
           MESA_VERSION="$(tr -d '[:space:]' < VERSION)"
-          OUTPUT_DIR="${GITHUB_WORKSPACE}/artifacts/driver"
-          WCP_ROOT="${GITHUB_WORKSPACE}/artifacts/winlator"
-          DRIVER="libvulkan_panfrost_kbase.so"
-          ICD="panfrost_kbase_icd.aarch64.json"
-
-          mkdir -p "${OUTPUT_DIR}" "${WCP_ROOT}/panvk"
+          PACKAGE_VERSION="Panvk-Mali-Kbase-beta_${MESA_VERSION}"
+          PACKAGE_DIR="${GITHUB_WORKSPACE}/artifacts/${PACKAGE_VERSION}"
+          DRIVER="libvulkan_panfrost.so"
+          mkdir -p "${PACKAGE_DIR}"
           install -m755 \
-            "${BUILD_DIR}/src/panfrost/vulkan/libvulkan_panfrost.so" \
-            "${OUTPUT_DIR}/${DRIVER}"
-          strip --strip-unneeded "${OUTPUT_DIR}/${DRIVER}"
+            "${ANDROID_BUILD_DIR}/src/panfrost/vulkan/libvulkan_panfrost.so" \
+            "${PACKAGE_DIR}/${DRIVER}"
+          install -m644 docs/license.rst "${PACKAGE_DIR}/LICENSE-Mesa.txt"
 
-          DRIVER_SIZE="$(stat -c '%s' "${OUTPUT_DIR}/${DRIVER}")"
-          MAX_DRIVER_SIZE=$((22 * 1024 * 1024))
+          DRIVER_SIZE="$(stat -c '%s' "${PACKAGE_DIR}/${DRIVER}")"
+          MAX_DRIVER_SIZE=22000000
           if (( DRIVER_SIZE > MAX_DRIVER_SIZE )); then
             echo "Driver is ${DRIVER_SIZE} bytes; maximum is ${MAX_DRIVER_SIZE}." >&2
             exit 1
           fi
+          readelf -h "${PACKAGE_DIR}/${DRIVER}" | grep -q 'Machine:.*AArch64'
+          readelf -d "${PACKAGE_DIR}/${DRIVER}" | grep -q 'liblog.so'
 
           python3 - \
-            "${BUILD_DIR}/src/panfrost/vulkan/panfrost_icd.aarch64.json" \
-            "${OUTPUT_DIR}/${ICD}" \
+            "${PACKAGE_DIR}/${DRIVER}" \
+            "${PACKAGE_DIR}/meta.json" \
             "${DRIVER}" \
             "${MESA_VERSION}" \
-            "${OUTPUT_DIR}/${DRIVER}.meta" \
-            "${OUTPUT_DIR}/profile.json" <<'PY'
+            "${PACKAGE_VERSION}" <<'PY'
+          import hashlib
           import json
           import sys
 
-          with open(sys.argv[1], encoding="utf-8") as source:
-              manifest = json.load(source)
-          manifest["ICD"]["library_path"] = sys.argv[3]
-          with open(sys.argv[2], "w", encoding="utf-8") as output:
-              json.dump(manifest, output, indent=4)
-              output.write("\n")
+          library, meta_path, library_name, mesa_version, package_version = sys.argv[1:]
+          with open(library, "rb") as driver:
+              driver_hash = hashlib.sha256(driver.read()).hexdigest()
 
           metadata = {
-              "name": "PanVK kbase",
-              "version": sys.argv[4],
-              "architecture": "aarch64",
-              "abi": "linux-gnu",
-              "library": sys.argv[3],
-              "icd_manifest": "panfrost_kbase_icd.aarch64.json",
-              "kernel_driver": "kbase",
+              "author": "FirstOneRR",
+              "description": f"PanVK for Mali (kbase), {package_version}",
+              "driverVersion": f"Mesa {mesa_version} / PanVK kbase",
+              "libraryName": library_name,
+              "minApi": 36,
+              "name": package_version,
+              "packageVersion": package_version,
+              "sanitizedArtifactSha256": driver_hash,
+              "schemaVersion": 1,
+              "vendor": "Mesa",
           }
-          with open(sys.argv[5], "w", encoding="utf-8") as output:
+          with open(meta_path, "w", encoding="utf-8") as output:
               json.dump(metadata, output, indent=2)
-              output.write("\n")
-
-          profile = {
-              "type": "PanVK",
-              "versionName": sys.argv[4],
-              "versionCode": 1,
-              "description": "PanVK Vulkan ICD for Mali GPUs using the kbase kernel driver.",
-              "files": [
-                  {
-                      "source": "panvk/" + sys.argv[3],
-                      "target": "${libdir}/" + sys.argv[3],
-                  },
-                  {
-                      "source": "panvk/" + "panfrost_kbase_icd.aarch64.json",
-                      "target": "${sharedir}/vulkan/icd.d/panfrost_kbase_icd.aarch64.json",
-                  },
-              ],
-          }
-          with open(sys.argv[6], "w", encoding="utf-8") as output:
-              json.dump(profile, output, indent=2)
               output.write("\n")
           PY
 
-          install -m755 "${OUTPUT_DIR}/${DRIVER}" "${WCP_ROOT}/panvk/${DRIVER}"
-          install -m644 "${OUTPUT_DIR}/${ICD}" "${WCP_ROOT}/panvk/${ICD}"
-          install -m644 "${OUTPUT_DIR}/profile.json" "${WCP_ROOT}/profile.json"
-          tar -C "${WCP_ROOT}" -cJf \
-            "${OUTPUT_DIR}/panvk-kbase-winlator.wcp" \
-            profile.json panvk
-
-          cd "${OUTPUT_DIR}"
-          zip -j "${GITHUB_WORKSPACE}/${ARTIFACT_NAME}.zip" \
-            "${DRIVER}" "${ICD}" "${DRIVER}.meta" profile.json \
-            panvk-kbase-winlator.wcp
+          OUTPUT_ZIP="${GITHUB_WORKSPACE}/${PACKAGE_VERSION}.zip"
+          (cd "${PACKAGE_DIR}" && zip -j "${OUTPUT_ZIP}" \
+            "${DRIVER}" meta.json LICENSE-Mesa.txt)
+          jq -e '.schemaVersion == 1 and .minApi == 36 and .libraryName == "libvulkan_panfrost.so"' \
+            "${PACKAGE_DIR}/meta.json" >/dev/null
+          test "$(unzip -Z1 "${OUTPUT_ZIP}" | sort | tr '\n' ' ')" = \
+            'LICENSE-Mesa.txt libvulkan_panfrost.so meta.json '
+          echo "file=${OUTPUT_ZIP}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload standalone driver
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
-          path: ${{ github.workspace }}/${{ env.ARTIFACT_NAME }}.zip
+          path: ${{ steps.package.outputs.file }}
           if-no-files-found: error
           retention-days: 7
 
@@ -211,6 +212,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}-logs
-          path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/meson-logs
+          path: |
+            ${{ github.workspace }}/${{ env.ANDROID_BUILD_DIR }}/meson-logs
+            ${{ github.workspace }}/${{ env.HOST_BUILD_DIR }}/meson-logs
           if-no-files-found: ignore
           retention-days: 7
