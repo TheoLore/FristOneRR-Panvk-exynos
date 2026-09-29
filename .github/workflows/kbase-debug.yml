@@ -1,5 +1,5 @@
 ---
-name: PanVK kbase debug Mesa
+name: PanVK kbase standalone driver
 
 'on':
   push:
@@ -16,9 +16,8 @@ jobs:
     container:
       image: debian:13
     env:
-      ARTIFACT_NAME: mesa-panvk-kbase-debug-aarch64
-      BUILD_DIR: build
-      INSTALL_PREFIX: /opt/mesa
+      ARTIFACT_NAME: panvk-kbase-driver-aarch64
+      BUILD_DIR: build-driver
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -38,8 +37,17 @@ jobs:
             libexpat1-dev \
             libclang-cpp-dev \
             libclang-dev \
-            libwayland-dev \
-            libwayland-egl-backend-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxrandr-dev \
+            libxcb-dri3-dev \
+            libxcb-present-dev \
+            libxcb-randr0-dev \
+            libxcb-shm0-dev \
+            libxcb-sync-dev \
+            libxcb-xfixes0-dev \
+            libxshmfence-dev \
+            libxxf86vm-dev \
             ninja-build \
             pkgconf \
             python3 \
@@ -51,7 +59,6 @@ jobs:
             llvm-dev \
             glslang-tools \
             spirv-tools \
-            wayland-protocols \
             zlib1g-dev \
             zip
           LLVM_MAJOR="$(llvm-config --version | cut -d. -f1)"
@@ -68,44 +75,130 @@ jobs:
       - name: Configure
         run: |
           CC=clang CXX=clang++ meson setup "${BUILD_DIR}" \
-            --buildtype=debug \
-            -Dprefix="${INSTALL_PREFIX}" \
+            --buildtype=release \
+            -Dprefix=/usr \
             -Dlibdir=lib \
+            -Db_ndebug=true \
             -Dbuild-tests=false \
-            -Degl=enabled \
-            -Degl-native-platform=auto \
+            -Ddisplay-info=disabled \
+            -Degl=disabled \
             -Denable-glcpp-tests=false \
-            -Dgallium-drivers=panfrost \
-            -Dgbm=enabled \
+            -Dgallium-drivers= \
+            -Dgbm=disabled \
             -Dgles1=disabled \
-            -Dgles2=enabled \
+            -Dgles2=disabled \
             -Dglx=disabled \
+            -Dinstall-mesa-clc=false \
+            -Dinstall-precomp-compiler=false \
+            -Dlibunwind=disabled \
+            -Dlmsensors=disabled \
             -Dllvm=enabled \
+            -Dmesa-clc=enabled \
             -Dopengl=false \
-            -Dpanfrost-kmds=kbase,panthor \
-            -Dplatforms=wayland \
+            -Dpanfrost-kmds=kbase \
+            -Dpanfrost-rust=false \
+            -Dplatforms=x11 \
+            -Dprecomp-compiler=enabled \
+            -Dshared-glapi=disabled \
+            -Dtools= \
             -Dvalgrind=disabled \
+            -Dvideo-codecs= \
             -Dvulkan-drivers=panfrost \
+            -Dvulkan-layers= \
+            -Dxmlconfig=disabled \
             -Dzstd=disabled
 
       - name: Build
         run: meson compile -C "${BUILD_DIR}" -j "$(nproc)"
 
-      - name: Install
+      - name: Stage standalone driver and metadata
+        shell: bash
         run: |
-          rm -rf artifacts
-          mkdir -p artifacts/install-root
-          meson install -C "${BUILD_DIR}" \
-            --destdir "${GITHUB_WORKSPACE}/artifacts/install-root"
+          set -euo pipefail
 
-      - name: Create zip package
-        run: |
-          cd "${GITHUB_WORKSPACE}/artifacts/install-root"
-          zip -r \
-            "${GITHUB_WORKSPACE}/${ARTIFACT_NAME}.zip" \
-            opt/mesa
+          MESA_VERSION="$(tr -d '[:space:]' < VERSION)"
+          OUTPUT_DIR="${GITHUB_WORKSPACE}/artifacts/driver"
+          WCP_ROOT="${GITHUB_WORKSPACE}/artifacts/winlator"
+          DRIVER="libvulkan_panfrost_kbase.so"
+          ICD="panfrost_kbase_icd.aarch64.json"
 
-      - name: Upload Mesa package
+          mkdir -p "${OUTPUT_DIR}" "${WCP_ROOT}/panvk"
+          install -m755 \
+            "${BUILD_DIR}/src/panfrost/vulkan/libvulkan_panfrost.so" \
+            "${OUTPUT_DIR}/${DRIVER}"
+          strip --strip-unneeded "${OUTPUT_DIR}/${DRIVER}"
+
+          DRIVER_SIZE="$(stat -c '%s' "${OUTPUT_DIR}/${DRIVER}")"
+          MAX_DRIVER_SIZE=$((22 * 1024 * 1024))
+          if (( DRIVER_SIZE > MAX_DRIVER_SIZE )); then
+            echo "Driver is ${DRIVER_SIZE} bytes; maximum is ${MAX_DRIVER_SIZE}." >&2
+            exit 1
+          fi
+
+          python3 - \
+            "${BUILD_DIR}/src/panfrost/vulkan/panfrost_icd.aarch64.json" \
+            "${OUTPUT_DIR}/${ICD}" \
+            "${DRIVER}" \
+            "${MESA_VERSION}" \
+            "${OUTPUT_DIR}/${DRIVER}.meta" \
+            "${OUTPUT_DIR}/profile.json" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as source:
+              manifest = json.load(source)
+          manifest["ICD"]["library_path"] = sys.argv[3]
+          with open(sys.argv[2], "w", encoding="utf-8") as output:
+              json.dump(manifest, output, indent=4)
+              output.write("\n")
+
+          metadata = {
+              "name": "PanVK kbase",
+              "version": sys.argv[4],
+              "architecture": "aarch64",
+              "abi": "linux-gnu",
+              "library": sys.argv[3],
+              "icd_manifest": "panfrost_kbase_icd.aarch64.json",
+              "kernel_driver": "kbase",
+          }
+          with open(sys.argv[5], "w", encoding="utf-8") as output:
+              json.dump(metadata, output, indent=2)
+              output.write("\n")
+
+          profile = {
+              "type": "PanVK",
+              "versionName": sys.argv[4],
+              "versionCode": 1,
+              "description": "PanVK Vulkan ICD for Mali GPUs using the kbase kernel driver.",
+              "files": [
+                  {
+                      "source": "panvk/" + sys.argv[3],
+                      "target": "${libdir}/" + sys.argv[3],
+                  },
+                  {
+                      "source": "panvk/" + "panfrost_kbase_icd.aarch64.json",
+                      "target": "${sharedir}/vulkan/icd.d/panfrost_kbase_icd.aarch64.json",
+                  },
+              ],
+          }
+          with open(sys.argv[6], "w", encoding="utf-8") as output:
+              json.dump(profile, output, indent=2)
+              output.write("\n")
+          PY
+
+          install -m755 "${OUTPUT_DIR}/${DRIVER}" "${WCP_ROOT}/panvk/${DRIVER}"
+          install -m644 "${OUTPUT_DIR}/${ICD}" "${WCP_ROOT}/panvk/${ICD}"
+          install -m644 "${OUTPUT_DIR}/profile.json" "${WCP_ROOT}/profile.json"
+          tar -C "${WCP_ROOT}" -cJf \
+            "${OUTPUT_DIR}/panvk-kbase-winlator.wcp" \
+            profile.json panvk
+
+          cd "${OUTPUT_DIR}"
+          zip -j "${GITHUB_WORKSPACE}/${ARTIFACT_NAME}.zip" \
+            "${DRIVER}" "${ICD}" "${DRIVER}.meta" profile.json \
+            panvk-kbase-winlator.wcp
+
+      - name: Upload standalone driver
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}
@@ -118,6 +211,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.ARTIFACT_NAME }}-logs
-          path: ${{ github.workspace }}/build/meson-logs
+          path: ${{ github.workspace }}/${{ env.BUILD_DIR }}/meson-logs
           if-no-files-found: ignore
           retention-days: 7

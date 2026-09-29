@@ -69,6 +69,25 @@ cd mesa-panvk-kbase-*-aarch64
 . ./env.sh
 ```
 
+## Standalone emulator driver
+
+The `PanVK kbase standalone driver` GitHub Actions workflow uploads a
+driver-only artifact containing `libvulkan_panfrost_kbase.so`, its Vulkan ICD
+JSON manifest, a descriptive `.meta` sidecar, and a Winlator `.wcp` package.
+The shared library is stripped and the workflow rejects it if it exceeds
+22 MiB.
+
+For Winlator's Content Manager, install the `.wcp` package. For manual Linux
+installation, place the shared library in the guest's library directory and
+install its ICD manifest under `share/vulkan/icd.d`. The `.meta` file documents
+the build; it is not a universal Vulkan-loader manifest. The loader uses the
+ICD JSON file.
+
+This artifact targets arm64 Linux with glibc, as used by Winlator's Linux
+userspace. It is not an Android/Bionic Vulkan driver and should not be selected
+as a native Android driver in Eden or another Android app. Those environments
+require a separate Android-target build and matching package format.
+
 ## Running Vulkan applications
 
 The distro packages install the ICD manifest system-wide. Selecting it
