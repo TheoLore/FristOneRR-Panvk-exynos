@@ -23,8 +23,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          sudo apt-get update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
             --no-install-recommends \
             bison \
             build-essential \
@@ -61,7 +61,7 @@ jobs:
             zlib1g-dev \
             zip
           LLVM_MAJOR="$(llvm-config --version | cut -d. -f1)"
-          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y \
             --no-install-recommends \
             "libclc-${LLVM_MAJOR}-dev" \
             "libllvmspirvlib-${LLVM_MAJOR}-dev"
