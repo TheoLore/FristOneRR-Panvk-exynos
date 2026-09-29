@@ -133,6 +133,7 @@ jobs:
             --libdir=lib \
             $(cat tools/fristonerr/build-options.txt) \
             -Dplatform-sdk-version=35 \
+            -Dzstd=disabled \
             -Dgallium-drivers= \
             -Dpanfrost-rust=false
 
