@@ -118,6 +118,10 @@ jobs:
           export PATH="${NDK_BIN}:${HOST_PREFIX}/bin:${PATH}"
 
           sed \
+            -e "s#c = \['clang', '--target=aarch64-linux-android35'\]#c = ['${NDK_BIN}/aarch64-linux-android36-clang']#" \
+            -e "s#cpp = \['clang++', '--target=aarch64-linux-android35'\]#cpp = ['${NDK_BIN}/aarch64-linux-android36-clang++']#" \
+            -e "s#ar = 'llvm-ar'#ar = '${NDK_BIN}/llvm-ar'#" \
+            -e "s#strip = 'llvm-strip'#strip = '${NDK_BIN}/llvm-strip'#" \
             -e 's/aarch64-linux-android35/aarch64-linux-android36/g' \
             -e "s#platform-sdk-version = '35'#platform-sdk-version = '36'#" \
             -e "s#/data/data/com.termux/files/home/mesa/build-host/src/util/mesa_clc#${HOST_PREFIX}/bin/mesa_clc#" \
