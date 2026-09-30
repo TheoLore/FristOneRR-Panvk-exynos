@@ -591,6 +591,32 @@ panvk_drop_unsupported_compat_features(const struct vk_features *supported,
 #undef PANVK_DROP_UNSUPPORTED
 }
 
+/* DXVK_HUD is parsed by DXVK, not by the Vulkan driver. Logging the values
+ * visible in this process makes a Winlator configuration problem explicit
+ * without trying to fake unsupported Vulkan features or implementing a second
+ * overlay in PanVK. */
+static void
+panvk_log_dxvk_environment(void)
+{
+   static bool logged;
+   if (logged)
+      return;
+   logged = true;
+
+   const char *hud = getenv("DXVK_HUD");
+   const char *level = getenv("DXVK_LOG_LEVEL");
+   const char *log_path = getenv("DXVK_LOG_PATH");
+   const char *filter = getenv("DXVK_FILTER_DEVICE_NAME");
+   panvk_dbg_log("dxvk: env DXVK_HUD=%s DXVK_LOG_LEVEL=%s DXVK_LOG_PATH=%s "
+                 "DXVK_FILTER_DEVICE_NAME=%s",
+                 hud ? hud : "(unset)", level ? level : "(unset)",
+                 log_path ? log_path : "(unset)",
+                 filter ? filter : "(unset)");
+   if (!hud || !hud[0])
+      mesa_logi("panvk: DXVK_HUD is not set in the game process; "
+                "set DXVK_HUD=full in Winlator's container environment");
+}
+
 VkResult
 panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
                               const VkDeviceCreateInfo *pCreateInfo,
@@ -601,6 +627,7 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
       to_panvk_instance(physical_device->vk.instance);
    VkResult result;
    struct panvk_device *device;
+   panvk_log_dxvk_environment();
 
    device = vk_zalloc2(&instance->vk.alloc, pAllocator, sizeof(*device), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_DEVICE);
