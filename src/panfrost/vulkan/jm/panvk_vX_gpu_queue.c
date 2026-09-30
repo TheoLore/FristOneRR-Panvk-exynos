@@ -113,8 +113,23 @@ panvk_queue_submit_batch(struct panvk_gpu_queue *queue,
    if (batch->vtc_jc.first_job) {
          if (unlikely(!queue->warmed_up)) {
          uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V);
-            (void)0;
-            (void)0;
+            /* The first vertex/tiler/compute chain must not be dropped.
+             * DXVK uses this submission for initial uploads on Bifrost, and
+             * the queue must be warmed with the actual chain before the
+             * first fragment job is allowed to run. Submit it synchronously
+             * so the first fragment submission cannot race the warm-up. */
+            if (queue->in_dep) {
+               kbase_kmod_wait_atom(dev->kmod.dev, queue->in_dep, -1);
+               queue->in_dep = 0;
+            }
+            bool ok = kbase_kmod_job_submit_retry(
+               dev->kmod.dev, batch->vtc_jc.first_job, vtc_core_req,
+               bos, nr_bos, NULL, 0, 5);
+            if (!ok) {
+               panvk_dbg_log("queue: initial V/T/C warm-up failed; "
+                             "keeping queue cold for retry");
+               return 0;
+            }
             queue->warmed_up = true;
          } else {
          uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V);
@@ -179,8 +194,12 @@ panvk_queue_submit_batch(struct panvk_gpu_queue *queue,
          bool ok = kbase_kmod_job_submit_retry(
             dev->kmod.dev, batch->frag_jc.first_job, BASE_JD_REQ_FS,
             bos, nr_bos, NULL, 0, 5);
+         if (!ok) {
+            panvk_dbg_log("queue: initial fragment warm-up failed; "
+                          "keeping queue cold for retry");
+            return 0;
+         }
          queue->frag_warmed_up = true;
-         (void)0;
          frag_atom = 0;
       } else {
          frag_atom = kbase_kmod_job_submit_dep(dev->kmod.dev, batch->frag_jc.first_job,
