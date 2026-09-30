@@ -115,7 +115,8 @@ struct base_jd_atom {
     * renderpass_id. The resulting base_jd_atom_v2 is 56 bytes. */
    __u8 padding[7];
 };
-STATIC_ASSERT(sizeof(struct base_jd_atom) == 56);
+_Static_assert(sizeof(struct base_jd_atom) == 56,
+               "UK 11.x base_jd_atom_v2 must be 56 bytes");
 
 /* UK 11.x JM kernels used by Bifrost devices such as the Galaxy A04s use
  * sizeof(struct base_jd_atom_v2) == 56. PANVK_ATOM_STRIDE remains available
