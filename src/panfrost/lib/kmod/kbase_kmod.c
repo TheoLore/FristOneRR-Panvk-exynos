@@ -35,6 +35,7 @@
  */
 
 #include "../pan_trace_gate.h"
+#include "../pan_dbg_log.h"
 #include <time.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -1243,19 +1244,34 @@ kbase_probe_atom_stride(int fd)
    };
    unsigned result = 64;
 
+   panvk_dbg_hex("kmod: stride probe atom sent (stride 64)", &atom,
+                 sizeof(atom));
    if (ioctl(fd, KBASE_IOCTL_JOB_SUBMIT, &sub) < 0) {
+      int saved_errno = errno;
+      panvk_dbg_log("kmod: stride probe: JOB_SUBMIT stride=64 failed, "
+                    "errno=%d (%s) -> using 56", saved_errno,
+                    strerror(saved_errno));
       result = 56;
    } else {
       struct pollfd pfd = { .fd = fd, .events = POLLIN };
-      if (poll(&pfd, 1, 1000) > 0) {
+      int pr = poll(&pfd, 1, 1000);
+      if (pr > 0) {
          struct base_jd_event_v2 ev = { 0 };
-         if (read(fd, &ev, sizeof(ev)) == (ssize_t)sizeof(ev) &&
+         ssize_t rn = read(fd, &ev, sizeof(ev));
+         panvk_dbg_log("kmod: stride probe: read=%zd event code=0x%x atom=%u",
+                       rn, (unsigned)ev.event_code, (unsigned)ev.atom_number);
+         panvk_dbg_hex("kmod: stride probe raw event", &ev, sizeof(ev));
+         if (rn == (ssize_t)sizeof(ev) &&
              (ev.event_code & BASE_JD_EVENT_ERR_MASK))
             result = 56;
+      } else {
+         panvk_dbg_log("kmod: stride probe: no event within 1s (poll=%d, "
+                       "errno=%d)", pr, errno);
       }
    }
 
    g_atom_stride = result;
+   panvk_dbg_log("kmod: atom stride = %u (probe done)", result);
    if (result != 64)
       dprintf(2, "[FristOneRR] atom stride auto-detected: %u\n", result);
 }
@@ -1298,6 +1314,9 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
 
    mesa_logd("kbase: %s driver, uAPI version %d.%d",
              is_csf ? "CSF" : "JM", ver.major, ver.minor);
+   panvk_dbg_log("kmod: log file = %s", panvk_dbg_path()[0] ? panvk_dbg_path() : "(stderr only)");
+   panvk_dbg_log("kmod: kbase %s driver, uAPI version %d.%d, fd=%d",
+                 is_csf ? "CSF" : "JM", ver.major, ver.minor, fd);
 
    /* Set context creation flags.  Zero for maximum compatibility; this also
     * creates the kernel-side context. */
@@ -1307,6 +1326,7 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
       return NULL;
    }
 
+   panvk_dbg_log("kmod: SET_FLAGS ok");
    if (!is_csf)
       kbase_probe_atom_stride(fd);
 
@@ -1319,7 +1339,9 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
     * first job. */
    if (!is_csf) {
       struct timespec warmup_ts = { .tv_sec = 2, .tv_nsec = 0 };
+      panvk_dbg_log("kmod: 2s GPU warm-up sleep begins");
       nanosleep(&warmup_ts, NULL);
+      panvk_dbg_log("kmod: 2s GPU warm-up sleep done");
    }
 
    /* Map the tracking page.  The kernel requires this before any memory
@@ -1432,6 +1454,16 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
 
    kbase_dev_query_props(kbase_dev, props_buf, props_size);
    free(props_buf);
+   panvk_dbg_log("kmod: GPU id=0x%llx variant=0x%x shader_present=0x%llx "
+                 "tiler_features=0x%x mem_features=0x%x mmu_features=0x%x "
+                 "max_threads_per_core=%u",
+                 (unsigned long long)kbase_dev->base.props.gpu_id,
+                 (unsigned)kbase_dev->base.props.gpu_variant,
+                 (unsigned long long)kbase_dev->base.props.shader_present,
+                 (unsigned)kbase_dev->base.props.tiler_features,
+                 (unsigned)kbase_dev->base.props.mem_features,
+                 (unsigned)kbase_dev->base.props.mmu_features,
+                 (unsigned)kbase_dev->base.props.max_threads_per_core);
 
    const char *dma_heap = getenv("PANVK_KBASE_DMA_HEAP");
    if (!dma_heap || !dma_heap[0])
@@ -2268,6 +2300,53 @@ kbase_atom_alloc_try(struct kbase_kmod_dev *kd, struct pan_kmod_bo **bos, uint32
 /* v52a fault report */
 static uint32_t g_atom_req[256];
 static int g_kfault_n;
+static int g_submit_log_n;
+static uint32_t g_submit_total;      /* atoms submitted (excl. stride probe) */
+static uint32_t g_last_submit_atom;
+static uint32_t g_last_submit_req;
+static uint64_t g_last_submit_jc;
+
+/* Called for every real atom right before the JOB_SUBMIT ioctl. */
+static void
+kbase_log_submitted_atom(const struct base_jd_atom *a, unsigned stride)
+{
+   uint32_t n = __atomic_add_fetch(&g_submit_total, 1, __ATOMIC_RELAXED);
+   g_last_submit_atom = a->atom_number;
+   g_last_submit_req = a->core_req;
+   g_last_submit_jc = a->jc;
+
+   if (!panvk_dbg_budget(&g_submit_log_n, 32))
+      return;
+
+   panvk_dbg_log("kmod: SUBMIT #%u stride=%u sizeof=%zu atom=%u core_req=0x%x "
+                 "jc=0x%llx dep0=%u/%u dep1=%u/%u prio=%u jobslot=%u "
+                 "nr_extres=%u",
+                 n, stride, sizeof(*a), (unsigned)a->atom_number,
+                 (unsigned)a->core_req, (unsigned long long)a->jc,
+                 (unsigned)a->pre_dep[0].atom_id,
+                 (unsigned)a->pre_dep[0].dependency_type,
+                 (unsigned)a->pre_dep[1].atom_id,
+                 (unsigned)a->pre_dep[1].dependency_type, (unsigned)a->prio,
+                 (unsigned)a->jobslot, (unsigned)a->nr_extres);
+   panvk_dbg_hex("kmod: SUBMIT atom bytes", a, sizeof(*a));
+}
+
+/* Called for every completion event that is not DONE. slot < 0: the event
+ * matched no entry of the atom table. */
+static void
+kbase_log_fault_event(const struct base_jd_event_v2 *ev, int slot)
+{
+   panvk_dbg_log("kmod: FAULT event atom=%u code=0x%x core_req(table)=0x%x "
+                 "slot=%d stride=%u | submits_so_far=%u last_submit: atom=%u "
+                 "core_req=0x%x jc=0x%llx",
+                 (unsigned)ev->atom_number, (unsigned)ev->event_code,
+                 g_atom_req[ev->atom_number & 0xff], slot,
+                 kbase_atom_stride(), __atomic_load_n(&g_submit_total,
+                                                       __ATOMIC_RELAXED),
+                 g_last_submit_atom, g_last_submit_req,
+                 (unsigned long long)g_last_submit_jc);
+   panvk_dbg_hex("kmod: FAULT raw event", ev, sizeof(*ev));
+}
 static void
 kbase_atom_process_event_locked(struct kbase_kmod_dev *kd,
                                 const struct base_jd_event_v2 *ev)
@@ -2277,8 +2356,15 @@ kbase_atom_process_event_locked(struct kbase_kmod_dev *kd,
          (void)0;
          kd->atoms[i].completed = true;
          kd->atoms[i].errored = (ev->event_code != BASE_JD_EVENT_DONE);
-         if (ev->event_code != BASE_JD_EVENT_DONE && g_kfault_n++ < 40)
-            dprintf(2, "[KFAULT] atom=%u code=0x%x core_req=0x%x\n", (unsigned)ev->atom_number, (unsigned)ev->event_code, g_atom_req[ev->atom_number & 0xff]);
+         if (ev->event_code != BASE_JD_EVENT_DONE) {
+            if (g_kfault_n++ < 40) {
+               dprintf(2, "[KFAULT] atom=%u code=0x%x core_req=0x%x slot=%d stride=%u\n", (unsigned)ev->atom_number, (unsigned)ev->event_code, g_atom_req[ev->atom_number & 0xff], i, kbase_atom_stride());
+               kbase_log_fault_event(ev, i);
+            }
+         } else if (panvk_dbg_verbose()) {
+            panvk_dbg_log("kmod: event DONE atom=%u slot=%d",
+                          (unsigned)ev->atom_number, i);
+         }
          kd->last_event_code[ev->atom_number & 0xff] = ev->event_code;
          if (kd->atoms[i].waiters == 0)
             kd->atoms[i].atom_number = 0;
@@ -2286,8 +2372,13 @@ kbase_atom_process_event_locked(struct kbase_kmod_dev *kd,
       }
    }
    (void)0;
-   if (ev->event_code != BASE_JD_EVENT_DONE && g_kfault_n++ < 40)
+   if (ev->event_code != BASE_JD_EVENT_DONE && g_kfault_n++ < 40) {
       dprintf(2, "[KFAULT] atom=%u code=0x%x core_req=0x%x (not in table)\n", (unsigned)ev->atom_number, (unsigned)ev->event_code, g_atom_req[ev->atom_number & 0xff]);
+      kbase_log_fault_event(ev, -1);
+   } else if (ev->event_code == BASE_JD_EVENT_DONE && panvk_dbg_verbose()) {
+      panvk_dbg_log("kmod: event DONE atom=%u (not in table)",
+                    (unsigned)ev->atom_number);
+   }
 }
 
 /* v53e: read every kbase event that is already pending (optionally waiting up
@@ -2503,13 +2594,18 @@ kbase_kmod_job_submit(struct pan_kmod_dev *dev,
       atom.pre_dep[i].dependency_type = 0;
    }
 
+   kbase_log_submitted_atom(&atom, kbase_atom_stride());
    struct kbase_ioctl_job_submit sub = {
       .addr = (uint64_t)(uintptr_t)&atom,
       .nr_atoms = 1,
       .stride = kbase_atom_stride(),
    };
    if (ioctl(dev->fd, KBASE_IOCTL_JOB_SUBMIT, &sub) < 0) {
-      mesa_loge("kbase: JOB_SUBMIT err=%d", errno);
+      int saved_errno = errno;
+      panvk_dbg_log("kmod: JOB_SUBMIT FAILED errno=%d (%s) atom=%u core_req=0x%x",
+                    saved_errno, strerror(saved_errno),
+                    (unsigned)atom.atom_number, (unsigned)atom.core_req);
+      mesa_loge("kbase: JOB_SUBMIT err=%d", saved_errno);
       simple_mtx_lock(&kd->atoms_lock);
       slot->atom_number = 0;
       simple_mtx_unlock(&kd->atoms_lock);
@@ -2554,6 +2650,7 @@ kbase_kmod_job_submit_dep(struct pan_kmod_dev *dev, uint64_t jc, uint32_t core_r
    }
 
    g_atom_req[atom.atom_number] = core_req;
+   kbase_log_submitted_atom(&atom, kbase_atom_stride());
    struct kbase_ioctl_job_submit sub = {
       .addr = (uint64_t)(uintptr_t)&atom,
       .nr_atoms = 1,
@@ -2561,7 +2658,11 @@ kbase_kmod_job_submit_dep(struct pan_kmod_dev *dev, uint64_t jc, uint32_t core_r
    };
    (void)0;
    if (ioctl(dev->fd, KBASE_IOCTL_JOB_SUBMIT, &sub) < 0) {
-      mesa_loge("kbase: JOB_SUBMIT(dep) err=%d", errno);
+      int saved_errno = errno;
+      panvk_dbg_log("kmod: JOB_SUBMIT(dep) FAILED errno=%d (%s) atom=%u "
+                    "core_req=0x%x", saved_errno, strerror(saved_errno),
+                    (unsigned)atom.atom_number, (unsigned)atom.core_req);
+      mesa_loge("kbase: JOB_SUBMIT(dep) err=%d", saved_errno);
       (void)0;
       simple_mtx_lock(&kd->atoms_lock);
       slot->atom_number = 0;

@@ -42,6 +42,7 @@
 
 #include "kmod/pan_kmod.h"
 #include "util/log.h"
+#include "../lib/pan_dbg_log.h"
 #include "util/os_file.h"
 #include "util/u_printf.h"
 #include "pan_props.h"
@@ -576,6 +577,8 @@ panvk_drop_unsupported_compat_features(const struct vk_features *supported,
          req->name = VK_FALSE;                                                 \
          mesa_logw("panvk: '" #name "' requested but not supported; "         \
                    "ignoring");                                                \
+         panvk_dbg_log("device: requested feature '" #name "' is not "         \
+                       "supported by the driver; dropped from the request");   \
       }                                                                        \
    } while (0)
 
@@ -931,6 +934,22 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
 #else
    panvk_utrace_perfetto_init(device, 2);
 #endif
+
+   panvk_dbg_log("device: vkCreateDevice OK arch=%u gpu_id=0x%llx "
+                 "enabled: robustBufferAccess2=%d nullDescriptor=%d "
+                 "geometryShader=%d tessellationShader=%d "
+                 "shaderClipDistance=%d multiViewport=%d "
+                 "textureCompressionBC=%d null_desc_bo=%s",
+                 (unsigned)PAN_ARCH,
+                 (unsigned long long)physical_device->kmod.dev->props.gpu_id,
+                 (int)device->vk.enabled_features.robustBufferAccess2,
+                 (int)device->vk.enabled_features.nullDescriptor,
+                 (int)device->vk.enabled_features.geometryShader,
+                 (int)device->vk.enabled_features.tessellationShader,
+                 (int)device->vk.enabled_features.shaderClipDistance,
+                 (int)device->vk.enabled_features.multiViewport,
+                 (int)device->vk.enabled_features.textureCompressionBC,
+                 device->null_desc_bo ? "yes" : "no");
 
    *pDevice = panvk_device_to_handle(device);
    return VK_SUCCESS;

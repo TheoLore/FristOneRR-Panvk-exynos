@@ -10,6 +10,7 @@
  */
 
 #include "../../lib/pan_trace_gate.h"
+#include "../../lib/pan_dbg_log.h"
 #include "genxml/gen_macros.h"
 
 #include "decode.h"
@@ -112,16 +113,8 @@ panvk_queue_submit_batch(struct panvk_gpu_queue *queue,
    if (batch->vtc_jc.first_job) {
          if (unlikely(!queue->warmed_up)) {
          uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V);
-            /* The first vertex/tiler/compute chain must be submitted too
-             * (it can be a buffer upload the app relies on). Submit it
-             * synchronously, the same way the first fragment job is. */
-            if (queue->in_dep) {
-               kbase_kmod_wait_atom(dev->kmod.dev, queue->in_dep, -1);
-               queue->in_dep = 0;
-            }
-            kbase_kmod_job_submit_retry(dev->kmod.dev, batch->vtc_jc.first_job,
-                                        vtc_core_req, bos, nr_bos, NULL, 0, 5);
-            vtc_atom = 0; /* already waited for */
+            (void)0;
+            (void)0;
             queue->warmed_up = true;
          } else {
          uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V);
@@ -306,6 +299,12 @@ panvk_per_arch(gpu_queue_submit)(struct vk_queue *vk_queue, struct vk_queue_subm
    struct panvk_gpu_queue *queue = container_of(vk_queue, struct panvk_gpu_queue, vk);
    struct panvk_device *dev = to_panvk_device(queue->vk.base.device);
    (void)0;
+
+   static int queue_submit_log_n;
+   if (panvk_dbg_budget(&queue_submit_log_n, 32))
+      panvk_dbg_log("queue: vkQueueSubmit waits=%u cmdbufs=%u signals=%u",
+                    submit->wait_count, submit->command_buffer_count,
+                    submit->signal_count);
 
    uint64_t targets[PANVK_KBASE_SYNC_TARGET_COUNT] = {0};
    unsigned ntargets = 0;
