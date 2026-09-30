@@ -1,0 +1,495 @@
+diff --git a/src/panfrost/vulkan/panvk_device.h b/src/panfrost/vulkan/panvk_device.h
+index a985c33..a6eee8a 100644
+--- a/src/panfrost/vulkan/panvk_device.h
++++ b/src/panfrost/vulkan/panvk_device.h
+@@ -75,6 +75,19 @@ struct panvk_device {
+    struct panvk_priv_bo *indirect_varying_buffer;
+    struct panvk_priv_bo *sample_positions;
+ 
++   /* Bifrost (v7) has no hardware NULL descriptor. Null image and texel
++    * buffer descriptors are emulated with valid descriptors that point into
++    * null_desc_bo: bytes 0-4K read-only zeros, 4K-8K scratch that
++    * absorbs writes, 8K-12K texture payload. Each entry is one 32-byte descriptor
++    * slot (PANVK_DESCRIPTOR_SIZE). Unused on v9+. */
++   struct panvk_priv_bo *null_desc_bo;
++   struct {
++      uint8_t sampled_img[32];
++      uint8_t storage_img[32];
++      uint8_t ro_texel_buf[32];
++      uint8_t rw_texel_buf[32];
++   } null_desc;
++
+    struct {
+       struct panvk_priv_bo *handlers_bo;
+       uint32_t handler_stride;
+diff --git a/src/panfrost/vulkan/panvk_vX_descriptor_set.c b/src/panfrost/vulkan/panvk_vX_descriptor_set.c
+index f4a54aa..f0571d3 100644
+--- a/src/panfrost/vulkan/panvk_vX_descriptor_set.c
++++ b/src/panfrost/vulkan/panvk_vX_descriptor_set.c
+@@ -89,9 +89,26 @@ write_desc_data(struct panvk_descriptor_set *set, uint32_t binding,
+       write_desc(set, binding, elem, &null_desc, (subdesc));                   \
+    } while (0)
+ #else
++/* Bifrost has no hardware NULL descriptor. An all-zero slot is a zero-sized
++ * UBO (entries = 0), a zero-sized SSBO (base = size = 0) and a default
++ * sampler; with robust buffer access the NIR lowering bounds-checks those, so
++ * reads return 0 and writes are dropped. Null image views and texel buffer
++ * views cannot be zero (Bifrost would decode an invalid descriptor): they
++ * use the valid descriptors built by init_null_descriptors() in
++ * panvk_vX_device.c. Always overwrite the slot so a previously written valid
++ * descriptor cannot survive a VK_NULL_HANDLE write. */
+ #define write_nulldesc(set, binding, elem, subdesc)                            \
+    do {                                                                        \
++      static const uint8_t null_desc_zero[PANVK_DESCRIPTOR_SIZE] = {0};        \
++      write_desc_data(set, binding, elem, (subdesc), 0, null_desc_zero,        \
++                      PANVK_DESCRIPTOR_SIZE);                                  \
+    } while (0)
++
++static struct panvk_device *
++panvk_set_device(const struct panvk_descriptor_set *set)
++{
++   return to_panvk_device(set->layout->vk.base.device);
++}
+ #endif
+ 
+ static void
+@@ -140,10 +157,26 @@ write_image_view_desc(struct panvk_descriptor_set *set,
+       &set->layout->bindings[binding];
+ 
+    if (pImageInfo->imageView == VK_NULL_HANDLE) {
++#if PAN_ARCH < 9
++      const struct panvk_device *dev = panvk_set_device(set);
++
++      for (uint8_t plane = 0; plane < binding_layout->textures_per_desc;
++           plane++) {
++         if (type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE)
++            write_desc_data(set, binding, elem, NO_SUBDESC, 0,
++                            dev->null_desc.storage_img, PANVK_DESCRIPTOR_SIZE);
++         else
++            write_desc_data(set, binding, elem,
++                            get_tex_subdesc_info(binding_layout->type, plane),
++                            0, dev->null_desc.sampled_img,
++                            PANVK_DESCRIPTOR_SIZE);
++      }
++#else
+       for (uint8_t plane = 0; plane < binding_layout->textures_per_desc;
+            plane++)
+          write_nulldesc(set, binding, elem,
+                         get_tex_subdesc_info(binding_layout->type, plane));
++#endif
+       return;
+    }
+ 
+@@ -249,7 +282,17 @@ write_buffer_view_desc(struct panvk_descriptor_set *set,
+                        uint32_t elem, VkDescriptorType type)
+ {
+    if (bufferView == VK_NULL_HANDLE) {
++#if PAN_ARCH < 9
++      const struct panvk_device *dev = panvk_set_device(set);
++
++      write_desc_data(set, binding, elem, NO_SUBDESC, 0,
++                      type == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER
++                         ? dev->null_desc.rw_texel_buf
++                         : dev->null_desc.ro_texel_buf,
++                      PANVK_DESCRIPTOR_SIZE);
++#else
+       write_nulldesc(set, binding, elem, NO_SUBDESC);
++#endif
+       return;
+    }
+ 
+diff --git a/src/panfrost/vulkan/panvk_vX_device.c b/src/panfrost/vulkan/panvk_vX_device.c
+index e0dc58b..8bef151 100644
+--- a/src/panfrost/vulkan/panvk_vX_device.c
++++ b/src/panfrost/vulkan/panvk_vX_device.c
+@@ -41,10 +41,19 @@
+ #endif
+ 
+ #include "kmod/pan_kmod.h"
++#include "util/log.h"
+ #include "util/os_file.h"
+ #include "util/u_printf.h"
+ #include "pan_props.h"
+ #include "pan_samples.h"
++#if PAN_ARCH < 9
++#include "drm-uapi/drm_fourcc.h"
++#include "pan_buffer.h"
++#include "pan_desc.h"
++#include "pan_format.h"
++#include "pan_image.h"
++#include "pan_texture.h"
++#endif
+ #include "poly/geometry.h"
+ 
+ static void *
+@@ -404,6 +413,181 @@ panvk_queue_destroy(struct vk_queue *queue)
+    }
+ }
+ 
++#if PAN_ARCH < 9
++/* Bifrost has no hardware NULL descriptor. Build valid descriptors that point
++ * at device-owned memory so that VK_NULL_HANDLE image views / texel buffer
++ * views (VK_EXT_robustness2 nullDescriptor) read zeros and cannot fault.
++ *
++ * null_desc_bo layout (4 KiB pages):
++ *   page 0: zeros, never written  -> sampled images, uniform texel buffers
++ *   page 1: scratch               -> storage images, storage texel buffers
++ *   page 2: texture payload for the sampled-image descriptor
++ */
++static VkResult
++panvk_per_arch(init_null_descriptors)(struct panvk_device *device)
++{
++   const uint64_t page = 4096;
++   const enum pipe_format pfmt = PIPE_FORMAT_R8G8B8A8_UNORM;
++
++   VkResult result = panvk_priv_bo_create(
++      device, 3 * page,
++      panvk_device_adjust_bo_flags(device, PAN_KMOD_BO_FLAG_WB_MMAP),
++      VK_SYSTEM_ALLOCATION_SCOPE_DEVICE, &device->null_desc_bo);
++   if (result != VK_SUCCESS)
++      return result;
++
++   uint8_t *host = device->null_desc_bo->addr.host;
++   const uint64_t zero_dev = device->null_desc_bo->addr.dev;
++   const uint64_t scratch_dev = zero_dev + page;
++   memset(host, 0, 3 * page);
++
++   /* Sampled image: 1x1 linear RGBA8 2D texture backed by the zero page. */
++   struct pan_image_plane null_plane = {0};
++   struct pan_image null_image = {
++      .props = {
++         .modifier = DRM_FORMAT_MOD_LINEAR,
++         .format = pfmt,
++         .extent_px = {.width = 1, .height = 1, .depth = 1},
++         .nr_samples = 1,
++         .dim = MALI_TEXTURE_DIMENSION_2D,
++         .nr_slices = 1,
++         .array_size = 1,
++      },
++      .mod_handler = pan_mod_get_handler(PAN_ARCH, DRM_FORMAT_MOD_LINEAR),
++      .planes = {&null_plane},
++   };
++   if (!null_image.mod_handler ||
++       !pan_image_layout_init(PAN_ARCH, &null_image, 0, NULL) ||
++       null_plane.layout.data_size_B > page) {
++      result = panvk_error(device, VK_ERROR_INITIALIZATION_FAILED);
++      goto err;
++   }
++   null_plane.base = zero_dev;
++
++   struct pan_image_view pview = {
++      .format = pfmt,
++      .dim = MALI_TEXTURE_DIMENSION_2D,
++      .swizzle = {PIPE_SWIZZLE_X, PIPE_SWIZZLE_Y, PIPE_SWIZZLE_Z,
++                  PIPE_SWIZZLE_W},
++      .planes = {{.image = &null_image, .plane_idx = 0}},
++      .nr_samples = 1,
++   };
++
++   if (GENX(pan_texture_estimate_payload_size)(&pview) > page) {
++      result = panvk_error(device, VK_ERROR_INITIALIZATION_FAILED);
++      goto err;
++   }
++
++   struct pan_ptr payload = {
++      .gpu = zero_dev + 2 * page,
++      .cpu = host + 2 * page,
++   };
++   struct mali_texture_packed tex;
++   GENX(pan_sampled_texture_emit)(&pview, &tex, &payload);
++   static_assert(sizeof(tex) == sizeof(device->null_desc.sampled_img),
++                 "wrong descriptor size");
++   memcpy(device->null_desc.sampled_img, &tex, sizeof(tex));
++
++   /* Storage image: same encoding as prepare_attr_buf_descs() in
++    * panvk_vX_image_view.c, for a 1x1x1 linear RGBA8 image on the scratch
++    * page (log2(nr_samples) = 0). */
++   struct mali_attribute_buffer_packed img[2];
++   pan_pack(&img[0], ATTRIBUTE_BUFFER, cfg) {
++      const uint32_t fmt_blksize = util_format_get_blocksize(pfmt);
++      const uint32_t hw_fmt = GENX(pan_format_from_pipe_format)(pfmt)->hw;
++
++      cfg.type = MALI_ATTRIBUTE_TYPE_3D_LINEAR;
++      cfg.pointer = scratch_dev;
++      cfg.stride = fmt_blksize | (hw_fmt << 10);
++      cfg.size = page;
++   }
++   pan_cast_and_pack(&img[1], ATTRIBUTE_BUFFER_CONTINUATION_3D, cfg) {
++      cfg.s_dimension = 1;
++      cfg.t_dimension = 1;
++      cfg.r_dimension = 1;
++      cfg.row_stride = 64;
++   }
++   static_assert(sizeof(img) == sizeof(device->null_desc.storage_img),
++                 "wrong descriptor size");
++   memcpy(device->null_desc.storage_img, img, sizeof(img));
++
++   /* Texel buffers: one RGBA8 element. Same layout as the padded descriptor
++    * written by write_buffer_view_desc(). */
++   struct {
++      struct mali_attribute_buffer_packed attr_buf_desc;
++      struct mali_attribute_packed attr_desc;
++      uint32_t pad[2];
++   } ro = {0}, rw = {0};
++   static_assert(sizeof(ro) == sizeof(device->null_desc.ro_texel_buf),
++                 "wrong descriptor size");
++
++   struct pan_buffer_view bview = {
++      .format = pfmt,
++      .width_el = 1,
++      .base = zero_dev,
++   };
++   GENX(pan_buffer_texture_emit)(&bview, &ro.attr_buf_desc, &ro.attr_desc);
++   bview.base = scratch_dev;
++   GENX(pan_buffer_texture_emit)(&bview, &rw.attr_buf_desc, &rw.attr_desc);
++   memcpy(device->null_desc.ro_texel_buf, &ro, sizeof(ro));
++   memcpy(device->null_desc.rw_texel_buf, &rw, sizeof(rw));
++
++   panvk_priv_bo_flush(device->null_desc_bo, 0, 3 * page);
++   return VK_SUCCESS;
++
++err:
++   panvk_priv_bo_unref(device->null_desc_bo);
++   device->null_desc_bo = NULL;
++   return result;
++}
++#endif
++
++/* The Winlator/Termux "Wrapper" layer sits between DXVK and this driver. It
++ * reports geometryShader, multiViewport, shaderClipDistance,
++ * shaderCullDistance and textureCompressionBC as supported whatever this
++ * driver reports, so DXVK enables them in vkCreateDevice. Rejecting that with
++ * VK_ERROR_FEATURE_NOT_PRESENT makes every game fail to start, including the
++ * ones that never use those features (Undertale, ...).
++ *
++ * The driver keeps REPORTING them honestly (unsupported). Here it only
++ * tolerates the request: bits for features the physical device does not
++ * support are dropped from the enabled set, and the caller's structure is
++ * restored right after vk_device_init(). Pipelines that really need one of
++ * them (a geometry shader) fail at shader compile time with
++ * VK_ERROR_FEATURE_NOT_PRESENT instead of crashing the GPU. */
++static VkPhysicalDeviceFeatures *
++panvk_get_requested_core_features(const VkDeviceCreateInfo *info)
++{
++   if (info->pEnabledFeatures)
++      return (VkPhysicalDeviceFeatures *)info->pEnabledFeatures;
++
++   const VkPhysicalDeviceFeatures2 *f2 =
++      vk_find_struct_const(info->pNext, PHYSICAL_DEVICE_FEATURES_2);
++   return f2 ? (VkPhysicalDeviceFeatures *)&f2->features : NULL;
++}
++
++static void
++panvk_drop_unsupported_compat_features(const struct vk_features *supported,
++                                       VkPhysicalDeviceFeatures *req)
++{
++#define PANVK_DROP_UNSUPPORTED(name)                                          \
++   do {                                                                        \
++      if (req->name && !supported->name) {                                     \
++         req->name = VK_FALSE;                                                 \
++         mesa_logw("panvk: '" #name "' requested but not supported; "         \
++                   "ignoring");                                                \
++      }                                                                        \
++   } while (0)
++
++   PANVK_DROP_UNSUPPORTED(geometryShader);
++   PANVK_DROP_UNSUPPORTED(multiViewport);
++   PANVK_DROP_UNSUPPORTED(shaderClipDistance);
++   PANVK_DROP_UNSUPPORTED(shaderCullDistance);
++   PANVK_DROP_UNSUPPORTED(textureCompressionBC);
++
++#undef PANVK_DROP_UNSUPPORTED
++}
++
+ VkResult
+ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
+                               const VkDeviceCreateInfo *pCreateInfo,
+@@ -450,8 +634,21 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
+    vk_device_dispatch_table_from_entrypoints(&dispatch_table,
+                                              &wsi_device_entrypoints, false);
+ 
++   VkPhysicalDeviceFeatures *req_features =
++      panvk_get_requested_core_features(pCreateInfo);
++   VkPhysicalDeviceFeatures req_features_saved = {0};
++   if (req_features) {
++      req_features_saved = *req_features;
++      panvk_drop_unsupported_compat_features(
++         &physical_device->vk.supported_features, req_features);
++   }
++
+    result = vk_device_init(&device->vk, &physical_device->vk, &dispatch_table,
+                            pCreateInfo, pAllocator);
++
++   if (req_features)
++      *req_features = req_features_saved;
++
+    if (result != VK_SUCCESS)
+       goto err_free_dev;
+ 
+@@ -633,6 +830,12 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
+    panvk_priv_bo_flush(device->sample_positions, 0,
+                        pan_sample_positions_buffer_size());
+ 
++#if PAN_ARCH < 9
++   result = panvk_per_arch(init_null_descriptors)(device);
++   if (result != VK_SUCCESS)
++      goto err_free_priv_bos;
++#endif
++
+ #if PAN_ARCH >= 10
+ 
+    result = panvk_per_arch(init_tiler_oom)(device);
+@@ -751,6 +954,7 @@ err_free_priv_bos:
+       u_printf_destroy(&device->printf.ctx);
+    panvk_priv_bo_unref(device->printf.bo);
+    panvk_priv_bo_unref(device->tiler_oom.handlers_bo);
++   panvk_priv_bo_unref(device->null_desc_bo);
+    panvk_priv_bo_unref(device->sample_positions);
+    panvk_priv_bo_unref(device->poly_heap);
+    panvk_priv_bo_unref(device->indirect_varying_buffer);
+@@ -808,6 +1012,7 @@ panvk_per_arch(destroy_device)(struct panvk_device *device,
+    panvk_priv_bo_unref(device->poly_heap);
+    panvk_priv_bo_unref(device->indirect_varying_buffer);
+    panvk_priv_bo_unref(device->tiler_heap);
++   panvk_priv_bo_unref(device->null_desc_bo);
+    panvk_priv_bo_unref(device->sample_positions);
+    panvk_device_cleanup_mempools(device);
+    vk_free(&device->vk.alloc, device->dump_region_size);
+diff --git a/src/panfrost/vulkan/panvk_vX_image_view.c b/src/panfrost/vulkan/panvk_vX_image_view.c
+index b962a26..825a579 100644
+--- a/src/panfrost/vulkan/panvk_vX_image_view.c
++++ b/src/panfrost/vulkan/panvk_vX_image_view.c
+@@ -187,8 +187,6 @@ prepare_tex_descs(struct panvk_image_view *view)
+          }
+       } else {
+          GENX(pan_sampled_texture_emit)(&pview, &view->descs.tex[0], &ptr);
+-      { const uint8_t *td = (const uint8_t *)&view->descs.tex[0]; (void)0; for (int _i = 0; _i < 32; _i++) fprintf(stderr, " %02x", td[_i]); fprintf(stderr, "\n"); }
+-      (void)0;
+ #if PAN_ARCH >= 9
+          if (has_storage) {
+             struct pan_image_view spview = panvk_storage_pview(view, &pview);
+diff --git a/src/panfrost/vulkan/panvk_vX_nir_lower_descriptors.c b/src/panfrost/vulkan/panvk_vX_nir_lower_descriptors.c
+index c53d8bb..9dd3991 100644
+--- a/src/panfrost/vulkan/panvk_vX_nir_lower_descriptors.c
++++ b/src/panfrost/vulkan/panvk_vX_nir_lower_descriptors.c
+@@ -605,8 +605,10 @@ load_tex_size(nir_builder *b, nir_deref_instr *deref, enum glsl_sampler_dim dim,
+       loaded_size = nir_iadd_imm(b, nir_u2u32(b, tex_sz), 1);
+    }
+ 
+-   /* TODO/Bifrost: Null descriptors */
+-   assert(PAN_ARCH < 9 && !ctx->null_descriptor_support);
++   /* Bifrost: null image views use a valid 1x1 dummy texture (see
++    * init_null_descriptors()), so this reports 1 instead of the 0 that
++    * robustness2 asks for. Harmless for DXVK. */
++   assert(PAN_ARCH < 9);
+ 
+    return loaded_size;
+ }
+@@ -675,8 +677,10 @@ load_tex_levels(nir_builder *b, nir_deref_instr *deref,
+    nir_def *lod_count = nir_iand_imm(b, nir_ushr_imm(b, tex_word2, 16), 0x1f);
+    nir_def *loaded_levels = nir_iadd_imm(b, lod_count, 1);
+ 
+-   /* TODO/Bifrost: Null descriptors */
+-   assert(PAN_ARCH < 9 && !ctx->null_descriptor_support);
++   /* Bifrost: null image views use a valid 1x1 dummy texture (see
++    * init_null_descriptors()), so this reports 1 instead of the 0 that
++    * robustness2 asks for. Harmless for DXVK. */
++   assert(PAN_ARCH < 9);
+ 
+    return loaded_levels;
+ }
+@@ -693,8 +697,10 @@ load_tex_samples(nir_builder *b, nir_deref_instr *deref,
+    nir_def *sample_count = nir_iand_imm(b, nir_ushr_imm(b, tex_word3, 13), 0x7);
+    nir_def *loaded_samples = nir_ishl(b, nir_imm_int(b, 1), sample_count);
+ 
+-   /* TODO/Bifrost: Null descriptors */
+-   assert(PAN_ARCH < 9 && !ctx->null_descriptor_support);
++   /* Bifrost: null image views use a valid 1x1 dummy texture (see
++    * init_null_descriptors()), so this reports 1 instead of the 0 that
++    * robustness2 asks for. Harmless for DXVK. */
++   assert(PAN_ARCH < 9);
+ 
+    return loaded_samples;
+ }
+diff --git a/src/panfrost/vulkan/panvk_vX_physical_device.c b/src/panfrost/vulkan/panvk_vX_physical_device.c
+index db61140..003d82c 100644
+--- a/src/panfrost/vulkan/panvk_vX_physical_device.c
++++ b/src/panfrost/vulkan/panvk_vX_physical_device.c
+@@ -12,6 +12,14 @@
+ #include <stdlib.h>
+ #include <sys/sysmacros.h>
+ 
++/* VK_KHR/EXT_robustness2 (robustBufferAccess2 + nullDescriptor).
++ * Valhall (v9+) has a hardware NULL descriptor. Bifrost (v7) has none, so
++ * null buffer descriptors are all-zero (zero-sized) descriptors and null
++ * image / texel buffer descriptors are valid descriptors pointing at a
++ * device-owned zero page (see init_null_descriptors() in panvk_vX_device.c).
++ * v6 shares the Bifrost code but is untested, hence not advertised. */
++#define PANVK_HAS_ROBUSTNESS2 (PAN_ARCH >= 9 || PAN_ARCH == 7)
++
+ #include "git_sha1.h"
+ #include <stdio.h>
+ 
+@@ -111,7 +119,7 @@ panvk_per_arch(get_physical_device_extensions)(
+       .KHR_pipeline_library = true,
+       .KHR_push_descriptor = true,
+       .KHR_relaxed_block_layout = true,
+-      .KHR_robustness2 = PAN_ARCH >= 9,
++      .KHR_robustness2 = PANVK_HAS_ROBUSTNESS2,
+       .KHR_sampler_mirror_clamp_to_edge = true,
+       .KHR_sampler_ycbcr_conversion = true,
+       .KHR_separate_depth_stencil_layouts = true,
+@@ -218,7 +226,7 @@ panvk_per_arch(get_physical_device_extensions)(
+       .EXT_queue_family_foreign = true,
+       .EXT_rasterization_order_attachment_access = PAN_ARCH >= 10,
+       .EXT_rgba10x6_formats = PAN_ARCH >= 11,
+-      .EXT_robustness2 = PAN_ARCH >= 9,
++      .EXT_robustness2 = PANVK_HAS_ROBUSTNESS2,
+       .EXT_sampler_filter_minmax = PAN_ARCH >= 10,
+       .EXT_scalar_block_layout = true,
+       .EXT_separate_stencil_usage = true,
+@@ -646,9 +654,9 @@ panvk_per_arch(get_physical_device_features)(
+       .pipelineExecutableInfo = true,
+ 
+       /* VK_KHR_robustness2 */
+-      .robustBufferAccess2 = PAN_ARCH >= 9,
++      .robustBufferAccess2 = PANVK_HAS_ROBUSTNESS2,
+       .robustImageAccess2 = false,
+-      .nullDescriptor = PAN_ARCH >= 9,
++      .nullDescriptor = PANVK_HAS_ROBUSTNESS2,
+ 
+       /* VK_EXT_shader_tile_image */
+       .shaderTileImageColorReadAccess = PAN_ARCH >= 9,
+diff --git a/src/panfrost/vulkan/panvk_vX_shader.c b/src/panfrost/vulkan/panvk_vX_shader.c
+index 1ca09fb..4a1ddcd 100644
+--- a/src/panfrost/vulkan/panvk_vX_shader.c
++++ b/src/panfrost/vulkan/panvk_vX_shader.c
+@@ -45,6 +45,7 @@
+ #include "pan_shader.h"
+ #include "poly/nir/poly_nir.h"
+ 
++#include "util/log.h"
+ #include "vk_log.h"
+ #include "vk_pipeline.h"
+ #include "vk_pipeline_layout.h"
+@@ -1856,6 +1857,20 @@ panvk_compile_shader(struct panvk_device *dev,
+       break;
+    }
+ 
++   case MESA_SHADER_GEOMETRY: {
++      /* Geometry shaders are not implemented (no lowering path yet). Fail the
++       * pipeline cleanly: applications and DXVK handle a failed pipeline
++       * compile, whereas running the stage would hang the GPU. */
++      static bool warned_gs;
++      if (!warned_gs) {
++         warned_gs = true;
++         mesa_logw("panvk: geometry shaders are not implemented; "
++                   "rejecting the pipeline");
++      }
++      panvk_shader_destroy(&dev->vk, &shader->vk, pAllocator);
++      return panvk_error(dev, VK_ERROR_FEATURE_NOT_PRESENT);
++   }
++
+    default:
+       UNREACHABLE("Unknown shader stage");
+    }

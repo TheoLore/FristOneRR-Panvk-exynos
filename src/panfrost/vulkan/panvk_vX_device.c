@@ -41,6 +41,7 @@
 #endif
 
 #include "kmod/pan_kmod.h"
+#include "util/log.h"
 #include "util/os_file.h"
 #include "util/u_printf.h"
 #include "pan_props.h"
@@ -541,6 +542,52 @@ err:
 }
 #endif
 
+/* The Winlator/Termux "Wrapper" layer sits between DXVK and this driver. It
+ * reports geometryShader, multiViewport, shaderClipDistance,
+ * shaderCullDistance and textureCompressionBC as supported whatever this
+ * driver reports, so DXVK enables them in vkCreateDevice. Rejecting that with
+ * VK_ERROR_FEATURE_NOT_PRESENT makes every game fail to start, including the
+ * ones that never use those features (Undertale, ...).
+ *
+ * The driver keeps REPORTING them honestly (unsupported). Here it only
+ * tolerates the request: bits for features the physical device does not
+ * support are dropped from the enabled set, and the caller's structure is
+ * restored right after vk_device_init(). Pipelines that really need one of
+ * them (a geometry shader) fail at shader compile time with
+ * VK_ERROR_FEATURE_NOT_PRESENT instead of crashing the GPU. */
+static VkPhysicalDeviceFeatures *
+panvk_get_requested_core_features(const VkDeviceCreateInfo *info)
+{
+   if (info->pEnabledFeatures)
+      return (VkPhysicalDeviceFeatures *)info->pEnabledFeatures;
+
+   const VkPhysicalDeviceFeatures2 *f2 =
+      vk_find_struct_const(info->pNext, PHYSICAL_DEVICE_FEATURES_2);
+   return f2 ? (VkPhysicalDeviceFeatures *)&f2->features : NULL;
+}
+
+static void
+panvk_drop_unsupported_compat_features(const struct vk_features *supported,
+                                       VkPhysicalDeviceFeatures *req)
+{
+#define PANVK_DROP_UNSUPPORTED(name)                                          \
+   do {                                                                        \
+      if (req->name && !supported->name) {                                     \
+         req->name = VK_FALSE;                                                 \
+         mesa_logw("panvk: '" #name "' requested but not supported; "         \
+                   "ignoring");                                                \
+      }                                                                        \
+   } while (0)
+
+   PANVK_DROP_UNSUPPORTED(geometryShader);
+   PANVK_DROP_UNSUPPORTED(multiViewport);
+   PANVK_DROP_UNSUPPORTED(shaderClipDistance);
+   PANVK_DROP_UNSUPPORTED(shaderCullDistance);
+   PANVK_DROP_UNSUPPORTED(textureCompressionBC);
+
+#undef PANVK_DROP_UNSUPPORTED
+}
+
 VkResult
 panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
                               const VkDeviceCreateInfo *pCreateInfo,
@@ -587,8 +634,21 @@ panvk_per_arch(create_device)(struct panvk_physical_device *physical_device,
    vk_device_dispatch_table_from_entrypoints(&dispatch_table,
                                              &wsi_device_entrypoints, false);
 
+   VkPhysicalDeviceFeatures *req_features =
+      panvk_get_requested_core_features(pCreateInfo);
+   VkPhysicalDeviceFeatures req_features_saved = {0};
+   if (req_features) {
+      req_features_saved = *req_features;
+      panvk_drop_unsupported_compat_features(
+         &physical_device->vk.supported_features, req_features);
+   }
+
    result = vk_device_init(&device->vk, &physical_device->vk, &dispatch_table,
                            pCreateInfo, pAllocator);
+
+   if (req_features)
+      *req_features = req_features_saved;
+
    if (result != VK_SUCCESS)
       goto err_free_dev;
 

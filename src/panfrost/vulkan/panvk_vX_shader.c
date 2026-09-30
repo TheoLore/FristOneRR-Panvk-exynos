@@ -45,6 +45,7 @@
 #include "pan_shader.h"
 #include "poly/nir/poly_nir.h"
 
+#include "util/log.h"
 #include "vk_log.h"
 #include "vk_pipeline.h"
 #include "vk_pipeline_layout.h"
@@ -1854,6 +1855,20 @@ panvk_compile_shader(struct panvk_device *dev,
          return result;
       }
       break;
+   }
+
+   case MESA_SHADER_GEOMETRY: {
+      /* Geometry shaders are not implemented (no lowering path yet). Fail the
+       * pipeline cleanly: applications and DXVK handle a failed pipeline
+       * compile, whereas running the stage would hang the GPU. */
+      static bool warned_gs;
+      if (!warned_gs) {
+         warned_gs = true;
+         mesa_logw("panvk: geometry shaders are not implemented; "
+                   "rejecting the pipeline");
+      }
+      panvk_shader_destroy(&dev->vk, &shader->vk, pAllocator);
+      return panvk_error(dev, VK_ERROR_FEATURE_NOT_PRESENT);
    }
 
    default:
