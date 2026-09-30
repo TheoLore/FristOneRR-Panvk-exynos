@@ -111,11 +111,15 @@ struct base_jd_atom {
    __u8 jobslot;
    __u32 core_req;
    __u8 renderpass_id;
-   __u8 padding[15]; /* pad struct to 64 bytes total; this kernel rejects any other JOB_SUBMIT stride */
+   /* UK 11.20+ uses the old compat-core_req slot for jit_id[2] and adds
+    * renderpass_id. The resulting base_jd_atom_v2 is 56 bytes. */
+   __u8 padding[7];
 };
+STATIC_ASSERT(sizeof(struct base_jd_atom) == 56);
 
-/* Some kbase builds (e.g. r49 on 6.6 kernels) expect a 56-byte atom
- * stride instead of 64. PANVK_ATOM_STRIDE overrides the default. */
+/* UK 11.x JM kernels used by Bifrost devices such as the Galaxy A04s use
+ * sizeof(struct base_jd_atom_v2) == 56. PANVK_ATOM_STRIDE remains available
+ * for vendor kernels with an older 48-byte or newer 64-byte ABI. */
 static unsigned g_atom_stride;
 
 static unsigned
@@ -124,7 +128,7 @@ kbase_atom_stride(void)
    if (!g_atom_stride) {
       const char *e = getenv("PANVK_ATOM_STRIDE");
       unsigned v = e ? (unsigned)atoi(e) : 0;
-      g_atom_stride = (v == 48 || v == 56 || v == 64) ? v : 64;
+      g_atom_stride = (v == 48 || v == 56 || v == 64) ? v : 56;
       if (e)
          dprintf(2, "[FristOneRR] atom stride = %u\n", g_atom_stride);
    }
@@ -1224,56 +1228,21 @@ kbase_kmod_alias_destroy(struct pan_kmod_dev *dev, uint64_t va, uint64_t size,
 }
 
 
-/* Probe the JOB_SUBMIT atom stride once per process: submit an empty
- * dependency-only atom (no GPU work) with stride 64. Kernels that expect
- * 56 (e.g. r49 on 6.6) answer with a config fault (0x40) or reject the
- * ioctl; then we switch to 56. PANVK_ATOM_STRIDE always wins. */
+/* Select the UK 11.x JM atom ABI. A dependency-only atom is not a valid
+ * stride probe: kernels accept it with multiple layouts and report DONE,
+ * which previously made this code incorrectly lock onto 64 bytes on G52.
+ * Use the ABI defined by UK 11.20+ and keep PANVK_ATOM_STRIDE as an escape
+ * hatch for vendor kernels with a different header. */
 static void
 kbase_probe_atom_stride(int fd)
 {
+   (void)fd;
    if (g_atom_stride || getenv("PANVK_ATOM_STRIDE")) {
       (void)kbase_atom_stride();
       return;
    }
-
-   struct base_jd_atom atom = { .atom_number = 255, .core_req = 0 };
-   struct kbase_ioctl_job_submit sub = {
-      .addr = (uint64_t)(uintptr_t)&atom,
-      .nr_atoms = 1,
-      .stride = 64,
-   };
-   unsigned result = 64;
-
-   panvk_dbg_hex("kmod: stride probe atom sent (stride 64)", &atom,
-                 sizeof(atom));
-   if (ioctl(fd, KBASE_IOCTL_JOB_SUBMIT, &sub) < 0) {
-      int saved_errno = errno;
-      panvk_dbg_log("kmod: stride probe: JOB_SUBMIT stride=64 failed, "
-                    "errno=%d (%s) -> using 56", saved_errno,
-                    strerror(saved_errno));
-      result = 56;
-   } else {
-      struct pollfd pfd = { .fd = fd, .events = POLLIN };
-      int pr = poll(&pfd, 1, 1000);
-      if (pr > 0) {
-         struct base_jd_event_v2 ev = { 0 };
-         ssize_t rn = read(fd, &ev, sizeof(ev));
-         panvk_dbg_log("kmod: stride probe: read=%zd event code=0x%x atom=%u",
-                       rn, (unsigned)ev.event_code, (unsigned)ev.atom_number);
-         panvk_dbg_hex("kmod: stride probe raw event", &ev, sizeof(ev));
-         if (rn == (ssize_t)sizeof(ev) &&
-             (ev.event_code & BASE_JD_EVENT_ERR_MASK))
-            result = 56;
-      } else {
-         panvk_dbg_log("kmod: stride probe: no event within 1s (poll=%d, "
-                       "errno=%d)", pr, errno);
-      }
-   }
-
-   g_atom_stride = result;
-   panvk_dbg_log("kmod: atom stride = %u (probe done)", result);
-   if (result != 64)
-      dprintf(2, "[FristOneRR] atom stride auto-detected: %u\n", result);
+   g_atom_stride = 56;
+   panvk_dbg_log("kmod: atom stride = 56 (UK 11.x JM ABI)");
 }
 
 static struct pan_kmod_dev *
@@ -2772,4 +2741,3 @@ const struct pan_kmod_ops kbase_kmod_ops = {
    .query_timestamp        = kbase_kmod_query_timestamp,
    .bo_set_label           = kbase_kmod_bo_set_label,
 };
-
