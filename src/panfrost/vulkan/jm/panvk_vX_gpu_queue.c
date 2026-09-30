@@ -112,7 +112,11 @@ panvk_queue_submit_batch(struct panvk_gpu_queue *queue,
 
    if (batch->vtc_jc.first_job) {
          if (unlikely(!queue->warmed_up)) {
-         uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V);
+         /* BASE_JD_REQ_V means value-writeback, not vertex shading.  The
+          * V/T/C chain on Bifrost does not contain a value-writeback job;
+          * advertising it makes older G52 JM kernels reject the atom with
+          * BASE_JD_EVENT_JOB_CONFIG_FAULT (0x40). */
+         uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T);
             /* The first vertex/tiler/compute chain must not be dropped.
              * DXVK uses this submission for initial uploads on Bifrost, and
              * the queue must be warmed with the actual chain before the
@@ -132,7 +136,7 @@ panvk_queue_submit_batch(struct panvk_gpu_queue *queue,
             }
             queue->warmed_up = true;
          } else {
-         uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T | BASE_JD_REQ_V);
+         uint32_t vtc_core_req = (BASE_JD_REQ_CS | BASE_JD_REQ_T);
             const bool v67_ov = panvk_overlap_enabled() && batch->frag_jc.first_job &&
                                 !queue->in_dep && queue->frag_warmed_up; /* v67b */
             vtc_atom = kbase_kmod_job_submit_dep(dev->kmod.dev, batch->vtc_jc.first_job, vtc_core_req, bos, nr_bos,
