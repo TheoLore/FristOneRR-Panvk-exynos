@@ -398,11 +398,18 @@ vk_icdGetInstanceProcAddr(VkInstance instance, const char *pName)
    return panvk_GetInstanceProcAddr(instance, pName);
 }
 
-/* v54a: allow the kbase device on Winlator without requiring an env var.
- * setenv(..., 0) never overrides a value the user set explicitly. */
+/* Bifrost and other experimental architectures are intentionally gated by
+ * panvk_physical_device.c. Do not bypass that gate for every Vulkan client:
+ * Android emulators and DXVK must be able to observe a normal
+ * VK_ERROR_INCOMPATIBLE_DRIVER and select a fallback renderer. Winlator (or
+ * an advanced user) can opt in explicitly through the project-local switch
+ * below; the Mesa switch remains supported for compatibility. */
 #include <stdlib.h>
 __attribute__((constructor)) static void
-panvk_default_env(void)
+panvk_apply_explicit_experimental_opt_in(void)
 {
-   setenv("PAN_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 0);
+   const char *opt_in = getenv("PANVK_ENABLE_EXPERIMENTAL");
+   if (opt_in && !strcmp(opt_in, "1") &&
+       !getenv("PAN_I_WANT_A_BROKEN_VULKAN_DRIVER"))
+      setenv("PAN_I_WANT_A_BROKEN_VULKAN_DRIVER", "1", 0);
 }
