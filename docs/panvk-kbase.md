@@ -73,7 +73,7 @@ cd mesa-panvk-kbase-*-aarch64
 
 The `PanVK Android kbase driver package` GitHub Actions workflow cross-builds
 an arm64 Android/Bionic library with the NDK API 35 sysroot. Its `meta.json`
-requires API 36, and the workflow uploads a ZIP containing exactly
+requires Android API 26 or newer, and the workflow uploads a ZIP containing exactly
 three root files: `libvulkan_panfrost.so`, `meta.json`, and `LICENSE-Mesa.txt`.
 The metadata follows the `schemaVersion: 1` format used by the PanVK Mali driver
 package and includes the library SHA-256. The build fails if the library is

@@ -189,7 +189,7 @@ jobs:
               "description": f"PanVK for Mali (kbase), {package_version}",
               "driverVersion": f"Mesa {mesa_version} / PanVK kbase",
               "libraryName": library_name,
-              "minApi": 36,
+              "minApi": 26,
               "name": package_version,
               "packageVersion": package_version,
               "sanitizedArtifactSha256": driver_hash,
@@ -204,7 +204,7 @@ jobs:
           OUTPUT_ZIP="${GITHUB_WORKSPACE}/${PACKAGE_VERSION}.zip"
           (cd "${PACKAGE_DIR}" && zip -j "${OUTPUT_ZIP}" \
             "${DRIVER}" meta.json LICENSE-Mesa.txt)
-          jq -e '.schemaVersion == 1 and .minApi == 36 and .libraryName == "libvulkan_panfrost.so"' \
+          jq -e '.schemaVersion == 1 and .minApi == 26 and .libraryName == "libvulkan_panfrost.so"' \
             "${PACKAGE_DIR}/meta.json" >/dev/null
           test "$(unzip -Z1 "${OUTPUT_ZIP}" | sort | tr '\n' ' ')" = \
             'LICENSE-Mesa.txt libvulkan_panfrost.so meta.json '
