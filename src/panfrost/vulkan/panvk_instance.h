@@ -39,7 +39,8 @@ enum panvk_debug_flags {
 
 extern uint64_t panvk_debug;
 
-#if defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
+#if defined(VK_USE_PLATFORM_ANDROID_KHR) || \
+    defined(VK_USE_PLATFORM_WAYLAND_KHR) || \
     defined(VK_USE_PLATFORM_XCB_KHR) || \
     defined(VK_USE_PLATFORM_XLIB_KHR) || \
     defined(VK_USE_PLATFORM_DISPLAY_KHR)
