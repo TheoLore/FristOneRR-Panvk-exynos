@@ -94,6 +94,38 @@ KGSL gate. Use an emulator build that supports generic Vulkan custom drivers,
 or add Mali/kbase support to that emulator before expecting this package to be
 selected.
 
+## Direct3D/DXVK compatibility on Mali-G52 (Bifrost v7)
+
+This ICD is a Vulkan driver; it does not contain DXVK or the Direct3D DLLs.
+DXVK must be installed in the Wine prefix separately and its native DLL
+overrides must be active for the relevant API (`d3d9`, `d3d10core`, `d3d11`,
+and `dxgi`). `DXVK_HUD=full` is parsed by DXVK itself. PanVK cannot turn the
+HUD on, draw it, or make a Wine prefix use DXVK; the driver-side diagnostic
+line only reports whether the variable reached the Vulkan process.
+
+The A04s Mali-G52 path currently exposes Vulkan 1.3 and working graphics,
+compute, and Bifrost job submission, but it **does not implement geometry
+shaders or tessellation shaders**, and it does not expose hardware BC texture
+compression or multi-viewport support. Therefore it must not be advertised as
+full D3D11/Unity compatibility. DXVK can run applications that stay within the
+reported feature set, while applications requiring geometry/tessellation or
+other missing features can fail device creation or pipeline compilation.
+
+For a real DXVK test, set these variables in the same game/container process,
+not only in the emulator UI:
+
+```sh
+DXVK_HUD=full
+DXVK_LOG_LEVEL=info
+DXVK_LOG_PATH=/sdcard/Android/data/<emulator.package>/files/dxvk-logs
+```
+
+The PanVK log should then contain `process: ... DXVK_HUD=full` and the DXVK
+directory should contain `*_d3d11.log`/`*_dxgi.log`. If the PanVK line says
+`(unset)`, the game is not passing the variable to the process. If the DXVK
+logs are absent, the application is using WineD3D or the wrong DLL override;
+changing the Vulkan ICD cannot fix that.
+
 ## Running Vulkan applications
 
 The distro packages install the ICD manifest system-wide. Selecting it

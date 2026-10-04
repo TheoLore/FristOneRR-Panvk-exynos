@@ -1251,6 +1251,26 @@ kbase_kmod_dev_create(int fd, uint32_t flags,
                       UNUSED const struct pan_kmod_driver *drv_info,
                       const struct pan_kmod_allocator *allocator)
 {
+   /* DXVK_HUD belongs to DXVK, not to the Vulkan ICD.  Record the values from
+    * the actual process that opened kbase so a missing HUD can be separated
+    * from a driver problem.  This is deliberately here rather than only in
+    * the architecture-specific device code: every kbase context passes this
+    * point, including loader/device-probe contexts. */
+   static bool env_logged;
+   if (!env_logged) {
+      env_logged = true;
+      const char *hud = getenv("DXVK_HUD");
+      const char *log_path = getenv("DXVK_LOG_PATH");
+      const char *overrides = getenv("WINEDLLOVERRIDES");
+      const char *wine = getenv("WINEPREFIX");
+      panvk_dbg_log("process: pid=%ld DXVK_HUD=%s DXVK_LOG_PATH=%s "
+                    "WINEDLLOVERRIDES=%s WINEPREFIX=%s",
+                    (long)getpid(), hud ? hud : "(unset)",
+                    log_path ? log_path : "(unset)",
+                    overrides ? overrides : "(unset)",
+                    wine ? wine : "(unset)");
+   }
+
    /* Version handshake.  This must be the very first ioctl on the fd; all
     * other ioctls return -EPERM until it succeeds.  The CSF flavour
     * (arch >= 10: G610/G710/...) uses ioctl nr 52, the JM flavour
