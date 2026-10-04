@@ -73,15 +73,26 @@ cd mesa-panvk-kbase-*-aarch64
 
 The `PanVK Android kbase driver package` GitHub Actions workflow cross-builds
 an arm64 Android/Bionic library with the NDK API 35 sysroot. Its `meta.json`
-requires Android API 26 or newer, and the workflow uploads a ZIP containing exactly
-three root files: `libvulkan_panfrost.so`, `meta.json`, and `LICENSE-Mesa.txt`.
-The metadata follows the `schemaVersion: 1` format used by the PanVK Mali driver
-package and includes the library SHA-256. The build fails if the library is
-larger than 22,000,000 bytes.
+requires Android API 26 or newer. The ZIP contains the Vulkan library,
+`libdrm.so`, `meta.json`, and `LICENSE-Mesa.txt`; the bundled `libdrm.so` is
+required because custom-driver loaders commonly use an isolated Android linker
+namespace. The Vulkan library has an `$ORIGIN` RUNPATH so that it resolves the
+bundled dependency instead of silently falling back to the system driver. The
+workflow rejects a package without this dependency or RUNPATH and fails if the
+library is larger than 22,000,000 bytes.
 
 Use this Android package with emulator driver importers that accept this
 metadata format. It is not the Linux/glibc ICD package described above; use the
 Debian, Ubuntu, Arch, or generic release package for a regular Linux userspace.
+
+Some Eden builds currently gate their custom-driver UI and loader on the
+presence of Qualcomm's `/dev/kgsl-3d0`. On a Samsung A04s/Mali-G52 device this
+gate is false, so Eden loads the Samsung system driver regardless of the ZIP;
+the log then reports the system version (for example `Mali-G52 38.1.0`) rather
+than PanVK. No PanVK library or metadata change can remove that application-side
+KGSL gate. Use an emulator build that supports generic Vulkan custom drivers,
+or add Mali/kbase support to that emulator before expecting this package to be
+selected.
 
 ## Running Vulkan applications
 

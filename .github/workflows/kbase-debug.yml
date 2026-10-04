@@ -136,6 +136,8 @@ jobs:
             --prefix=/usr \
             --libdir=lib \
             $(cat tools/fristonerr/build-options.txt) \
+            -Dc_link_args=-Wl,-rpath,'$ORIGIN' \
+            -Dcpp_link_args=-Wl,-rpath,'$ORIGIN' \
             -Dplatform-sdk-version=35 \
             -Dzstd=disabled \
             -Dallow-fallback-for=libdrm \
@@ -159,6 +161,18 @@ jobs:
           install -m755 \
             "${ANDROID_BUILD_DIR}/src/panfrost/vulkan/libvulkan_panfrost.so" \
             "${PACKAGE_DIR}/${DRIVER}"
+          # PanVK uses libdrm for the kbase ioctl definitions. Eden and other
+          # Android emulators load custom drivers in an isolated linker
+          # namespace, so a dependency that exists only in the build tree or
+          # host image makes dlopen() fail and silently falls back to the
+          # system Mali driver. Ship the fallback libdrm beside the driver and
+          # require the driver RUNPATH to resolve dependencies from $ORIGIN.
+          LIBDRM="$(find "${ANDROID_BUILD_DIR}" -type f \( -name 'libdrm.so' -o -name 'libdrm.so.*' \) -print -quit)"
+          if [[ -z "${LIBDRM}" ]]; then
+            echo "Android libdrm.so was not produced; refusing a non-loadable package." >&2
+            exit 1
+          fi
+          install -m755 "${LIBDRM}" "${PACKAGE_DIR}/libdrm.so"
           install -m644 docs/license.rst "${PACKAGE_DIR}/LICENSE-Mesa.txt"
 
           DRIVER_SIZE="$(stat -c '%s' "${PACKAGE_DIR}/${DRIVER}")"
@@ -169,6 +183,9 @@ jobs:
           fi
           readelf -h "${PACKAGE_DIR}/${DRIVER}" | grep -q 'Machine:.*AArch64'
           readelf -d "${PACKAGE_DIR}/${DRIVER}" | grep -q 'liblog.so'
+          readelf -d "${PACKAGE_DIR}/${DRIVER}" | grep -q 'RUNPATH.*\$ORIGIN'
+          readelf -d "${PACKAGE_DIR}/${DRIVER}" | grep -q 'Shared library: \[libdrm.so\]'
+          test -r "${PACKAGE_DIR}/libdrm.so"
 
           python3 - \
             "${PACKAGE_DIR}/${DRIVER}" \
@@ -203,11 +220,11 @@ jobs:
 
           OUTPUT_ZIP="${GITHUB_WORKSPACE}/${PACKAGE_VERSION}.zip"
           (cd "${PACKAGE_DIR}" && zip -j "${OUTPUT_ZIP}" \
-            "${DRIVER}" meta.json LICENSE-Mesa.txt)
+            "${DRIVER}" libdrm.so meta.json LICENSE-Mesa.txt)
           jq -e '.schemaVersion == 1 and .minApi == 26 and .libraryName == "libvulkan_panfrost.so"' \
             "${PACKAGE_DIR}/meta.json" >/dev/null
           test "$(unzip -Z1 "${OUTPUT_ZIP}" | sort | tr '\n' ' ')" = \
-            'LICENSE-Mesa.txt libvulkan_panfrost.so meta.json '
+            'LICENSE-Mesa.txt libdrm.so libvulkan_panfrost.so meta.json '
           echo "file=${OUTPUT_ZIP}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload standalone driver
