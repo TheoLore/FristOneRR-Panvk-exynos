@@ -188,6 +188,15 @@ jobs:
                 install -m755 "${LIB}" "${PACKAGE_DIR}/${BASENAME}" ;;
             esac
           done < <(find "${ANDROID_BUILD_DIR}" -type f -name '*.so*' -print0)
+          # Android builds can emit a versioned target name. Normalize it to
+          # the unversioned SONAME expected by Mojo's native library lookup.
+          LIBEGL="$(find "${ANDROID_BUILD_DIR}" -type f -name 'libEGL_mesa.so*' -print -quit)"
+          if [[ -z "${LIBEGL}" ]]; then
+            echo 'Mesa EGL target was not produced; available shared objects:' >&2
+            find "${ANDROID_BUILD_DIR}" -type f -name '*.so*' -print | sort >&2
+            exit 1
+          fi
+          install -m755 "${LIBEGL}" "${PACKAGE_DIR}/libEGL_mesa.so"
           test -s "${PACKAGE_DIR}/libEGL_mesa.so"
           install -m644 docs/license.rst "${PACKAGE_DIR}/LICENSE-Mesa.txt"
 
