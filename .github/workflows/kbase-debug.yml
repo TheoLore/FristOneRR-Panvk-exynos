@@ -130,6 +130,9 @@ jobs:
             -e "s#/data/data/com.termux/files/home/mesa/build-host/src/util/mesa_clc#${HOST_PREFIX}/bin/mesa_clc#" \
             android-cross.txt > "${RUNNER_TEMP}/android-cross-ci.txt"
 
+          # Minecraft Java uses OpenGL through Zink. Build the EGL/Zink
+          # runtime from the same Mesa tree as PanVK; an ICD-only APK cannot
+          # create the GL context that Mojo/LWJGL requires.
           meson setup "${ANDROID_BUILD_DIR}" \
             --cross-file "${RUNNER_TEMP}/android-cross-ci.txt" \
             --buildtype=release \
@@ -141,7 +144,8 @@ jobs:
             -Dplatform-sdk-version=35 \
             -Dzstd=disabled \
             -Dallow-fallback-for=libdrm \
-            -Dgallium-drivers= \
+            -Dgallium-drivers=zink \
+            -Degl=enabled \
             -Dpanfrost-rust=false
 
       - name: Build Android PanVK
@@ -173,6 +177,18 @@ jobs:
             exit 1
           fi
           install -m755 "${LIBDRM}" "${PACKAGE_DIR}/libdrm.so"
+          # Keep the Zink/EGL runtime beside the driver so the Mojo APK can
+          # select a completely self-consistent Mesa stack. Some Mesa
+          # versions build libzink into libgallium; copy every target shared
+          # object and let the APK linker resolve the local DT_NEEDED set.
+          while IFS= read -r -d '' LIB; do
+            BASENAME="$(basename "${LIB}")"
+            case "${BASENAME}" in
+              libEGL_mesa.so*|libGLESv2_mesa.so*|libgallium.so*|libglapi.so*|libzink.so*)
+                install -m755 "${LIB}" "${PACKAGE_DIR}/${BASENAME}" ;;
+            esac
+          done < <(find "${ANDROID_BUILD_DIR}" -type f -name '*.so*' -print0)
+          test -s "${PACKAGE_DIR}/libEGL_mesa.so"
           install -m644 docs/license.rst "${PACKAGE_DIR}/LICENSE-Mesa.txt"
 
           DRIVER_SIZE="$(stat -c '%s' "${PACKAGE_DIR}/${DRIVER}")"
@@ -220,11 +236,12 @@ jobs:
 
           OUTPUT_ZIP="${GITHUB_WORKSPACE}/${PACKAGE_VERSION}.zip"
           (cd "${PACKAGE_DIR}" && zip -j "${OUTPUT_ZIP}" \
-            "${DRIVER}" libdrm.so meta.json LICENSE-Mesa.txt)
+            *.so meta.json LICENSE-Mesa.txt)
           jq -e '.schemaVersion == 1 and .minApi == 26 and .libraryName == "libvulkan_panfrost.so"' \
             "${PACKAGE_DIR}/meta.json" >/dev/null
-          test "$(unzip -Z1 "${OUTPUT_ZIP}" | sort | tr '\n' ' ')" = \
-            'LICENSE-Mesa.txt libdrm.so libvulkan_panfrost.so meta.json '
+          unzip -Z1 "${OUTPUT_ZIP}" | grep -qx 'libvulkan_panfrost.so'
+          unzip -Z1 "${OUTPUT_ZIP}" | grep -qx 'libdrm.so'
+          unzip -Z1 "${OUTPUT_ZIP}" | grep -qx 'libEGL_mesa.so'
           echo "file=${OUTPUT_ZIP}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload standalone driver
@@ -241,7 +258,55 @@ jobs:
         with:
           name: ${{ env.ARTIFACT_NAME }}-logs
           path: |
-            ${{ github.workspace }}/${{ env.ANDROID_BUILD_DIR }}/meson-logs
-            ${{ github.workspace }}/${{ env.HOST_BUILD_DIR }}/meson-logs
+            ${{ env.ANDROID_BUILD_DIR }}/meson-logs
+            ${{ env.ANDROID_BUILD_DIR }}/meson-info
           if-no-files-found: ignore
+
+  build-mojo-panvk-debug:
+    name: Build MojoLauncher with PanVK selected
+    needs: build-panvk-android
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout with Mojo submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Android SDK and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36,build-tools;35.0.0,ndk;29.0.14206865'
+
+      - name: Download the exact PanVK artifact built above
+        uses: actions/download-artifact@v4
+        with:
+          name: panvk-mali-kbase-android
+          path: panvk-package
+
+      - name: Stage PanVK into the arm64 APK native directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$(find panvk-package -type f -name '*.zip' -print -quit)"
+          test -n "${ZIP}"
+          mkdir -p mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a
+          unzip -j -o "${ZIP}" \
+            '*.so*' \
+            -d mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a
+          test -s mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libvulkan_panfrost.so
+          test -s mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libdrm.so
+          test -s mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libEGL_mesa.so
+
+      - name: Assemble MojoLauncher full debug APK
+        working-directory: mojo-launcher
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        run: ./gradlew :app_pojavlauncher:assembleFullDebug --no-daemon
+
+      - name: Upload MojoLauncher PanVK APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mojo-launcher-panvk-debug
+          path: mojo-launcher/app_pojavlauncher/build/outputs/apk/full/debug/*.apk
+          if-no-files-found: error
           retention-days: 7

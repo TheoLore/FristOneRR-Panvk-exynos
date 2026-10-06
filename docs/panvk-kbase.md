@@ -94,6 +94,27 @@ KGSL gate. Use an emulator build that supports generic Vulkan custom drivers,
 or add Mali/kbase support to that emulator before expecting this package to be
 selected.
 
+## MojoLauncher / Minecraft Java on Samsung Mali-G52
+
+The repository also contains a MojoLauncher integration under
+`mojo-launcher/`. Its `PanVK kbase + Zink` renderer is deliberately restricted
+to an ARM device whose system GLES renderer reports `Mali-G52`. This is the
+tested Samsung Exynos/Bifrost target for this fork; it is not a generic switch
+for every Mali device.
+
+Minecraft Java uses Mojo's OpenGL/LWJGL path, so loading the Vulkan ICD alone
+is insufficient. The Mojo renderer prepares `libEGL_mesa.so`, selects Zink,
+then uses the patched MojoExec linker-namespace bridge to make
+`libvulkan_panfrost.so` the Vulkan device underneath Zink. This is the path
+used by current Java releases including 26.3. The APK must contain matching
+arm64 `libvulkan_panfrost.so`, `libdrm.so`, and `libEGL_mesa.so` libraries;
+mixing libraries from different Mesa builds is unsupported.
+
+Mali-G52 Bifrost does not implement geometry or tessellation shaders in this
+driver. Vanilla Minecraft 26.3 can use the renderer, but shader packs or mods
+requiring those features must remain disabled. The renderer does not falsely
+advertise those Vulkan features merely to pass device creation.
+
 ## Direct3D/DXVK compatibility on Mali-G52 (Bifrost v7)
 
 This ICD is a Vulkan driver; it does not contain DXVK or the Direct3D DLLs.
