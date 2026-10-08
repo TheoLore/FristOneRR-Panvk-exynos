@@ -130,9 +130,6 @@ jobs:
             -e "s#/data/data/com.termux/files/home/mesa/build-host/src/util/mesa_clc#${HOST_PREFIX}/bin/mesa_clc#" \
             android-cross.txt > "${RUNNER_TEMP}/android-cross-ci.txt"
 
-          # Minecraft Java uses OpenGL through Zink. Build the EGL/Zink
-          # runtime from the same Mesa tree as PanVK; an ICD-only APK cannot
-          # create the GL context that Mojo/LWJGL requires.
           meson setup "${ANDROID_BUILD_DIR}" \
             --cross-file "${RUNNER_TEMP}/android-cross-ci.txt" \
             --buildtype=release \
@@ -144,8 +141,7 @@ jobs:
             -Dplatform-sdk-version=35 \
             -Dzstd=disabled \
             -Dallow-fallback-for=libdrm \
-            -Dgallium-drivers=zink \
-            -Degl=enabled \
+            -Dgallium-drivers= \
             -Dpanfrost-rust=false
 
       - name: Build Android PanVK
@@ -177,27 +173,6 @@ jobs:
             exit 1
           fi
           install -m755 "${LIBDRM}" "${PACKAGE_DIR}/libdrm.so"
-          # Keep the Zink/EGL runtime beside the driver so the Mojo APK can
-          # select a completely self-consistent Mesa stack. Some Mesa
-          # versions build libzink into libgallium; copy every target shared
-          # object and let the APK linker resolve the local DT_NEEDED set.
-          while IFS= read -r -d '' LIB; do
-            BASENAME="$(basename "${LIB}")"
-            case "${BASENAME}" in
-              libEGL_mesa.so*|libEGL.so*|libGLESv2_mesa.so*|libGLESv2.so*|libGLESv1_CM.so*|libgallium.so*|libgallium_dri.so*|libglapi.so*|libzink.so*)
-                install -m755 "${LIB}" "${PACKAGE_DIR}/${BASENAME}" ;;
-            esac
-          done < <(find "${ANDROID_BUILD_DIR}" -type f -name '*.so*' -print0)
-          # Android builds can emit a versioned target name. Normalize it to
-          # the unversioned SONAME expected by Mojo's native library lookup.
-          LIBEGL="$(find "${ANDROID_BUILD_DIR}" -type f \( -name 'libEGL_mesa.so*' -o -name 'libEGL.so*' \) -print -quit)"
-          if [[ -z "${LIBEGL}" ]]; then
-            echo 'Mesa EGL target was not produced; available shared objects:' >&2
-            find "${ANDROID_BUILD_DIR}" -type f -name '*.so*' -print | sort >&2
-            exit 1
-          fi
-          install -m755 "${LIBEGL}" "${PACKAGE_DIR}/libEGL_mesa.so"
-          test -s "${PACKAGE_DIR}/libEGL_mesa.so"
           install -m644 docs/license.rst "${PACKAGE_DIR}/LICENSE-Mesa.txt"
 
           DRIVER_SIZE="$(stat -c '%s' "${PACKAGE_DIR}/${DRIVER}")"
@@ -250,7 +225,6 @@ jobs:
             "${PACKAGE_DIR}/meta.json" >/dev/null
           unzip -Z1 "${OUTPUT_ZIP}" | grep -qx 'libvulkan_panfrost.so'
           unzip -Z1 "${OUTPUT_ZIP}" | grep -qx 'libdrm.so'
-          unzip -Z1 "${OUTPUT_ZIP}" | grep -qx 'libEGL_mesa.so'
           echo "file=${OUTPUT_ZIP}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload standalone driver
@@ -307,7 +281,6 @@ jobs:
             -d mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a
           test -s mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libvulkan_panfrost.so
           test -s mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libdrm.so
-          test -s mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libEGL_mesa.so
 
       - name: Assemble MojoLauncher full debug APK
         working-directory: mojo-launcher

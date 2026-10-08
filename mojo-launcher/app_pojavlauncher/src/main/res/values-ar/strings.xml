@@ -51,7 +51,7 @@
     <string name="mcl_setting_category_renderer">عارض الرسوميات</string>
     <string name="mcl_setting_renderer_gles2_4">Holy GL4ES - (جميع الإصدارات، سريع)</string>
     <string name="mcl_setting_renderer_vulkan_zink">Zink (Vulkan) - (جميع الإصدارات، متوسط)</string>
-    <string name="mcl_setting_renderer_panvk_kbase">PanVK kbase + Zink (Mali-G52/Exynos - Minecraft 26.3)</string>
+    <string name="mcl_setting_renderer_panvk_kbase">PanVK Vulkan (Mali-G52/Exynos - Vulkan الأصلي)</string>
     <string name="mcl_setting_renderer_ltw">LTW (OpenGL ES 3) - 1.17+ فقط</string>
     <string name="mcl_setting_veroption_release">إصدار نهائي</string>
     <string name="mcl_setting_veroption_snapshot">اللمحات \"سنابشوت\"</string>

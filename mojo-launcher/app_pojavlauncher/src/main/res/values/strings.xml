@@ -66,7 +66,7 @@
     <string name="mcl_setting_renderer_gles2_4">GL4ES (OpenGL ES 2) - 1.21.4 and lower</string>
     <string name="mcl_setting_renderer_ltw">LTW (OpenGL ES 3) - 1.17+ only</string>
     <string name="mcl_setting_renderer_vulkan_zink">Zink (Vulkan) - all versions</string>
-    <string name="mcl_setting_renderer_panvk_kbase">PanVK kbase + Zink (Mali-G52/Exynos - Minecraft 26.3)</string>
+    <string name="mcl_setting_renderer_panvk_kbase">PanVK Vulkan (Mali-G52/Exynos - native backend)</string>
     <string name="mcl_setting_renderer_vulkan_lzink">Legacy Zink (Vulkan) - all versions, low performance</string>
     <string name="mcl_setting_renderer_freedreno_kgsl">Freedreno (KGSL) - all versions</string>
     <string name="mcl_setting_renderer_mesa_desktop">Mesa (DRM) - all versions</string>

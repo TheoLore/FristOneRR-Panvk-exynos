@@ -5,6 +5,7 @@ import android.os.Build;
 import android.util.Log;
 
 import net.kdt.pojavlaunch.Tools;
+import net.kdt.pojavlaunch.game.renderer.RenderSpec;
 import net.kdt.pojavlaunch.game.renderer.def.Renderers;
 import net.kdt.pojavlaunch.utils.GpuUtils;
 
@@ -19,21 +20,16 @@ import git.artdeell.mojo.R;
 import git.artdeell.mojoexec.MojoExec;
 
 /**
- * PanVK kbase as the Vulkan backend of Mesa Zink.
+ * Direct PanVK Vulkan renderer for Minecraft Java's native Vulkan backend.
  *
- * Minecraft Java launched by Mojo uses the OpenGL/LWJGL path. Therefore a
- * PanVK-only RenderSpec is not enough: this spec must prepare Mesa EGL and
- * select Zink, while MojoExec injects the PanVK ICD underneath Zink.
- *
- * The target supported by this repository is the Samsung Exynos/Mali-G52
- * Bifrost kbase/JM path. It is intentionally not advertised as a generic
- * Mali driver because the kernel ABI and GPU model tables are device-specific.
+ * This is intentionally not a Mesa/Zink renderer. Mojang's current Java
+ * renderer can create a Vulkan instance directly; MojoExec injects the
+ * app-private PanVK ICD into Android's Vulkan loader before that happens.
  */
-public final class PanvkRenderSpec extends MesaRenderSpec.ZinkRenderSpec {
+public final class PanvkRenderSpec implements RenderSpec {
     private static final String TAG = "PanVK-G52";
     private static final String DRIVER = "libvulkan_panfrost.so";
     private static final String LIBDRM = "libdrm.so";
-    private static final String EGL = "libEGL_mesa.so";
     private static final String MANIFEST_ASSET = "panvk/panfrost_kbase_icd.template.json";
 
     private File manifest;
@@ -46,12 +42,11 @@ public final class PanvkRenderSpec extends MesaRenderSpec.ZinkRenderSpec {
     public boolean compatibleDevice(Context context) {
         if (Build.VERSION.SDK_INT < 26 || !isArm64()) return false;
         if (!nativeFile(DRIVER).isFile() || !nativeFile(LIBDRM).isFile()) return false;
-        if (!nativeFile(EGL).isFile()) return false;
         if (!GpuUtils.checkVulkanSupport(context.getPackageManager())) return false;
         try {
             GpuUtils.GLInfo glInfo = GpuUtils.getGlInfo();
-            // This fork's tested target is the Samsung Mali-G52 Bifrost/JM
-            // path. Do not expose it on G57/G68/Valhall devices by guesswork.
+            // This fork targets the Samsung Mali-G52 Bifrost/JM kbase path.
+            // Do not expose it on unrelated Mali generations by guesswork.
             return glInfo.isArm() && glInfo.renderer.toLowerCase().contains("mali-g52");
         } catch (RuntimeException e) {
             Log.w(TAG, "Could not query GLES GPU information", e);
@@ -68,7 +63,7 @@ public final class PanvkRenderSpec extends MesaRenderSpec.ZinkRenderSpec {
 
     @Override
     public String name() {
-        return "PanVK kbase + Zink (Mali-G52)";
+        return "PanVK Vulkan (Mali-G52)";
     }
 
     @Override
@@ -82,29 +77,26 @@ public final class PanvkRenderSpec extends MesaRenderSpec.ZinkRenderSpec {
     }
 
     @Override
-    public void setupEnvironment(Context context, Map<String, String> envMap) {
-        // This supplies MESA_LOADER_DRIVER_OVERRIDE=zink, GL 4.6 overrides and
-        // the shader cache directory required by the normal Mojo Zink path.
-        super.setupEnvironment(context, envMap);
+    public String library() {
+        // RenderSpec requires a library name; native Vulkan setup does not call
+        // MojoExec.prepareEgl() or treat this as an EGL/GLES renderer.
+        return DRIVER;
+    }
 
+    @Override
+    public void setupEnvironment(Context context, Map<String, String> envMap) {
         manifest = makeManifest(context);
         if (manifest == null) return;
 
-        // Keep these for Vulkan-loader diagnostics and for native Vulkan mods.
-        // Actual Android ICD selection is performed by MojoExec injection.
+        // Native Minecraft Vulkan and Vulkan mods can use the standard loader
+        // variables. MojoExec's linker-namespace bridge is the authoritative
+        // Android selection path because APK-private manifests are unreliable.
         envMap.put("VK_DRIVER_FILES", manifest.getAbsolutePath());
         envMap.put("VK_ICD_FILENAMES", manifest.getAbsolutePath());
-
-        // Supported by this repository's kbase implementation. DRI3=0 is the
-        // safe Android fallback; raw DRI3 is only for a compatible X server.
         envMap.put("PANVK_ENABLE_EXPERIMENTAL", "1");
         envMap.put("PANVK_KBASE_DRI3", "0");
         envMap.put("PANVK_KBASE_DMA_HEAP", "/dev/dma_heap/system");
         envMap.put("PANVK_TRACE", "0");
-
-        // Do not force PANVK_KBASE_DVFS=max or a large heap: on an unrooted
-        // Samsung kernel that either fails silently or causes thermal/OOM
-        // instability. The Mesa defaults are the safe performance baseline.
     }
 
     private File makeManifest(Context context) {
@@ -134,14 +126,12 @@ public final class PanvkRenderSpec extends MesaRenderSpec.ZinkRenderSpec {
 
     @Override
     public boolean setupRenderer() {
-        if (!nativeFile(DRIVER).isFile() || !nativeFile(LIBDRM).isFile()
-                || !nativeFile(EGL).isFile() || manifest == null) {
+        if (!nativeFile(DRIVER).isFile() || !nativeFile(LIBDRM).isFile() || manifest == null) {
             return false;
         }
-
-        // Must happen before Zink's Vulkan device is created.
+        // Must happen before Minecraft creates its native Vulkan instance.
         MojoExec.setUsePanvk(true);
         MojoExec.preloadVulkan();
-        return super.setupRenderer();
+        return true;
     }
 }

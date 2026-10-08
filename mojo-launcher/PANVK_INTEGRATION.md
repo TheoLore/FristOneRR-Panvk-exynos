@@ -2,22 +2,21 @@
 
 This checkout contains the MojoLauncher source under `mojo-launcher/` and a
 renderer integration for the PanVK kbase ICD built by the parent Mesa tree.
-Minecraft Java reaches Vulkan through Mesa Zink, so the selectable renderer is
-PanVK-backed Zink rather than an ICD-only renderer.
+The selectable renderer is a direct PanVK Vulkan backend for Minecraft's
+native Vulkan renderer; it does not use Zink or EGL.
 
 ## What is bundled
 
 The Android application does **not** silently replace the vendor Vulkan stack.
-It exposes **PanVK kbase + Zink** only when all of these are true:
+It exposes **PanVK Vulkan** only when all of these are true:
 
 - the process is running on `arm64-v8a` and Android API 26 or newer;
 - the device reports the tested ARM `Mali-G52` GLES renderer;
-- `libEGL_mesa.so`, `libvulkan_panfrost.so`, and the matching `libdrm.so` are
-  present in the application native directory.
+- `libvulkan_panfrost.so` and the matching `libdrm.so` are present in the
+  application native directory.
 
-The renderer prepares Mesa EGL, selects `MESA_LOADER_DRIVER_OVERRIDE=zink`,
-creates an app-private ICD manifest for diagnostics, and sets the PanVK kbase
-options. For the actual Android path, the patched MojoExec opens
+The renderer creates an app-private ICD manifest for diagnostics and sets the
+PanVK kbase options. For the actual Android path, the patched MojoExec opens
 `libvulkan_panfrost.so` in the app linker namespace and hooks the Android
 loader's `vulkan.*` lookup to that handle. This is necessary because Android
 loaders do not consistently discover ICD manifests stored inside an APK.
@@ -33,7 +32,6 @@ assembling the app:
 ```text
 mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libvulkan_panfrost.so
 mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libdrm.so
-mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libEGL_mesa.so
 ```
 
 They must come from the same Mesa build. Do not copy a Linux/glibc build into

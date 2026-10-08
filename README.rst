@@ -11,9 +11,8 @@ Other repositories are likely forks, and code found there is not supported.
 PanVK MojoLauncher integration
 ------------------------------
 This fork also contains the MojoLauncher Android source under
-``mojo-launcher/``. Its video settings expose ``PanVK kbase + Zink`` only when
-the arm64 Android PanVK ICD, matching ``libdrm.so``, and Mesa EGL runtime are
-packaged. See
+``mojo-launcher/``. Its video settings expose direct ``PanVK Vulkan`` only when
+the arm64 Android PanVK ICD and matching ``libdrm.so`` are packaged. See
 ``mojo-launcher/PANVK_INTEGRATION.md`` and
 ``scripts/build_mojo_panvk_debug.sh`` for the reproducible build path. The
 launcher selects PanVK through a patched MojoExec Android linker-namespace
