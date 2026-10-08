@@ -167,12 +167,14 @@ jobs:
           # host image makes dlopen() fail and silently falls back to the
           # system Mali driver. Ship the fallback libdrm beside the driver and
           # require the driver RUNPATH to resolve dependencies from $ORIGIN.
-          LIBDRM="$(find "${ANDROID_BUILD_DIR}" -type f \( -name 'libdrm.so' -o -name 'libdrm.so.*' \) -print -quit)"
+          LIBDRM="$(find "${ANDROID_BUILD_DIR}" -type f -name 'libdrm.so' -print -quit)"
           if [[ -z "${LIBDRM}" ]]; then
             echo "Android libdrm.so was not produced; refusing a non-loadable package." >&2
             exit 1
           fi
           install -m755 "${LIBDRM}" "${PACKAGE_DIR}/libdrm.so"
+          test -s "${PACKAGE_DIR}/libdrm.so"
+          readelf -h "${PACKAGE_DIR}/libdrm.so" | grep -q 'Machine:.*AArch64'
           install -m644 docs/license.rst "${PACKAGE_DIR}/LICENSE-Mesa.txt"
 
           DRIVER_SIZE="$(stat -c '%s' "${PACKAGE_DIR}/${DRIVER}")"
