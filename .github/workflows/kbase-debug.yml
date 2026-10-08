@@ -175,6 +175,13 @@ jobs:
           install -m755 "${LIBDRM}" "${PACKAGE_DIR}/libdrm.so"
           test -s "${PACKAGE_DIR}/libdrm.so"
           readelf -h "${PACKAGE_DIR}/libdrm.so" | grep -q 'Machine:.*AArch64'
+          LIBCXX="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so"
+          if [[ ! -s "${LIBCXX}" ]]; then
+            echo "Matching Android libc++_shared.so was not found in the build NDK." >&2
+            exit 1
+          fi
+          install -m755 "${LIBCXX}" "${PACKAGE_DIR}/libc++_shared.so"
+          readelf -h "${PACKAGE_DIR}/libc++_shared.so" | grep -q 'Machine:.*AArch64'
           install -m644 docs/license.rst "${PACKAGE_DIR}/LICENSE-Mesa.txt"
 
           DRIVER_SIZE="$(stat -c '%s' "${PACKAGE_DIR}/${DRIVER}")"
@@ -188,6 +195,7 @@ jobs:
           readelf -d "${PACKAGE_DIR}/${DRIVER}" | grep -q 'RUNPATH.*\$ORIGIN'
           readelf -d "${PACKAGE_DIR}/${DRIVER}" | grep -q 'Shared library: \[libdrm.so\]'
           test -r "${PACKAGE_DIR}/libdrm.so"
+          test -r "${PACKAGE_DIR}/libc++_shared.so"
 
           python3 - \
             "${PACKAGE_DIR}/${DRIVER}" \
@@ -292,6 +300,7 @@ jobs:
             -d mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a
           test -s mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libvulkan_panfrost.so
           test -s mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libdrm.so
+          test -s mojo-launcher/app_pojavlauncher/src/main/jniLibs/arm64-v8a/libc++_shared.so
 
       - name: Assemble MojoLauncher full debug APK
         working-directory: mojo-launcher

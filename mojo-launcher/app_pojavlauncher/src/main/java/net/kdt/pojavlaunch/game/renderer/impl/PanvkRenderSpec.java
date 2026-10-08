@@ -30,6 +30,7 @@ public final class PanvkRenderSpec implements RenderSpec {
     private static final String TAG = "PanVK-G52";
     private static final String DRIVER = "libvulkan_panfrost.so";
     private static final String LIBDRM = "libdrm.so";
+    private static final String LIBCXX = "libc++_shared.so";
     private static final String MANIFEST_ASSET = "panvk/panfrost_kbase_icd.template.json";
 
     private File manifest;
@@ -41,7 +42,7 @@ public final class PanvkRenderSpec implements RenderSpec {
     @Override
     public boolean compatibleDevice(Context context) {
         if (Build.VERSION.SDK_INT < 26 || !isArm64()) return false;
-        if (!nativeFile(DRIVER).isFile() || !nativeFile(LIBDRM).isFile()) return false;
+        if (!nativeFile(DRIVER).isFile() || !nativeFile(LIBDRM).isFile() || !nativeFile(LIBCXX).isFile()) return false;
         if (!GpuUtils.checkVulkanSupport(context.getPackageManager())) return false;
         try {
             GpuUtils.GLInfo glInfo = GpuUtils.getGlInfo();
@@ -126,7 +127,8 @@ public final class PanvkRenderSpec implements RenderSpec {
 
     @Override
     public boolean setupRenderer() {
-        if (!nativeFile(DRIVER).isFile() || !nativeFile(LIBDRM).isFile() || manifest == null) {
+        if (!nativeFile(DRIVER).isFile() || !nativeFile(LIBDRM).isFile()
+                || !nativeFile(LIBCXX).isFile() || manifest == null) {
             return false;
         }
         // Must happen before Minecraft creates its native Vulkan instance.

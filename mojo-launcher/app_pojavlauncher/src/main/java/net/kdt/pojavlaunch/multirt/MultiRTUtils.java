@@ -99,6 +99,17 @@ public class MultiRTUtils {
         if (ftIn.exists() && (!ftOut.exists() || ftIn.length() != ftOut.length())) {
             if(!ftIn.renameTo(ftOut)) throw new IOException("Failed to rename freetype");
         }
+        // Some Java 25 Android runtime archives omit freetype entirely.
+        // libfontmanager loads it from the runtime namespace before LWJGL
+        // starts, so the copy in the APK native directory is not visible
+        // there. Copy the ABI-matched launcher library into that namespace.
+        if (!ftOut.isFile() || ftOut.length() == 0) {
+            File bundledFreetype = new File(NATIVE_LIB_DIR, "libfreetype.so");
+            if (!bundledFreetype.isFile() || bundledFreetype.length() == 0) {
+                throw new IOException("Java runtime has no libfreetype.so and launcher fallback is missing");
+            }
+            FileUtils.copyFile(bundledFreetype, ftOut);
+        }
 
         // Refresh libraries
         copyDummyNativeLib("libawt_xawt.so", libDir);

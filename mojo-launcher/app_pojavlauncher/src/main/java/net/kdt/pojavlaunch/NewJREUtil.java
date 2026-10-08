@@ -46,7 +46,16 @@ public class NewJREUtil {
     private static void checkInternalRuntime(AssetManager assetManager, InternalRuntime internalRuntime) throws RuntimeSelectionException {
         String remote_runtime_version;
         String installed_runtime_version = MultiRTUtils.readInternalRuntimeVersion(internalRuntime.name);
-        if(installed_runtime_version != null && checkLastUpdateTime(internalRuntime)) return;
+        if(installed_runtime_version != null && checkLastUpdateTime(internalRuntime)) {
+            try {
+                // Repair runtime namespace libraries even when the runtime is
+                // cached and does not need a version download.
+                MultiRTUtils.postPrepare(internalRuntime.name);
+            } catch (IOException exc) {
+                Log.w("NewJreUtil", "Failed to repair cached runtime libraries", exc);
+            }
+            return;
+        }
         try {
             remote_runtime_version = getRemoteRuntimeVersion(internalRuntime);
         }catch (IOException exc) {
