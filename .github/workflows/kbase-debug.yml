@@ -257,11 +257,16 @@ jobs:
 
       - name: Install Android SDK and NDK
         uses: android-actions/setup-android@v3
-        with:
-          packages: |
-            platforms;android-36
-            build-tools;35.0.0
-            ndk;29.0.14206865
+
+      - name: Install Android build packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            'platforms;android-36' \
+            'build-tools;35.0.0' \
+            'ndk;29.0.14206865'
 
       - name: Download the exact PanVK artifact built above
         uses: actions/download-artifact@v4
